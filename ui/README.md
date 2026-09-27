@@ -138,6 +138,11 @@ To upgrade: `venv/bin/pip install -U -r requirements-dev.txt`, run the suite,
 audit (`pip-audit -r requirements.lock`, from a separate venv), then regenerate
 the lock with `venv/bin/pip freeze` (keep its header).
 
+`tests/js/dashboard.test.mjs` runs the dashboard's real inline script under
+Node with a minimal DOM stub (escaping/XSS guard, formatters, DST-safe bucket
+filling, stale quota rendering, chart summaries); `test_dashboard_js.py` runs it
+from pytest and skips when `node` is not installed.
+
 Tests use `httpx.MockTransport` for the management API and `httpx.ASGITransport`
 for the app; no network, no sleeps (time-dependent behaviour takes an injectable
 `clock` or explicit timestamps).
