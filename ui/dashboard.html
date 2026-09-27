@@ -309,10 +309,16 @@ function renderCharts(a){
 
 function qbar(label,w){
   if(!w)return "";
-  const p=w.used_pct; const cls=p==null?"":(p>=90?"bad":p>=70?"warn":"");
-  const reset=w.reset||{};
+  const p=w.used_pct; const reset=w.reset||{};
+  const when=reset.utc?`${esc(localTs(reset.utc))} local · ${esc(utcTs(reset.utc))}`:"—";
+  if(w.reset_passed){
+    // The observed figure belongs to a window that has already reset: do not show it as current.
+    return `<div class="qrow"><b>${esc(label)}</b><div class="qbar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuetext="unknown, window reset since last observation" aria-label="${esc(label)} used"><div class="qfill stale" style="width:0%"></div></div><span class="num muted">unknown</span></div>
+  <div class="qmeta warn">window reset at ${when}; last observed ${p==null?"—":p.toFixed(0)+"%"} before that. Updates with the next request.</div>`;
+  }
+  const cls=p==null?"":(p>=90?"bad":p>=70?"warn":"");
   return `<div class="qrow"><b>${esc(label)}</b><div class="qbar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p??0}" aria-label="${esc(label)} used"><div class="qfill ${cls}" style="width:${Math.min(100,p||0)}%"></div></div><span class="num">${p==null?"—":p.toFixed(0)+"% used"}</span></div>
-  <div class="qmeta">status <b class="${w.status==="allowed"?"ok":"bad"}">${esc(w.status||"—")}</b> · resets ${reset.utc?`${esc(localTs(reset.utc))} local · ${esc(utcTs(reset.utc))}`:"—"}</div>`;
+  <div class="qmeta">status <b class="${w.status==="allowed"?"ok":"bad"}">${esc(w.status||"—")}</b> · resets ${when}</div>`;
 }
 function renderQuota(q){
   if(!q.available){$("quota").innerHTML=`<div class="panel bad">Quota unavailable: ${esc(q.error||"management API unreachable")}</div>`;$("quota-note").textContent="";return;}

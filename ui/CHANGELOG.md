@@ -3,6 +3,14 @@
 Versions are shown in the dashboard header/footer, `/api/health` and
 `/api/analytics` (`ui/version.py`).
 
+## Unreleased
+
+- Hourly buckets carry the UTC offset and are ordered by real time, so the
+  repeated hour on a DST fall-back day is not merged (`ab02be3`).
+- Quota windows whose reset time has passed since the last observed upstream
+  response are flagged (`reset_passed`) and shown as "unknown" instead of
+  presenting the old utilisation as current.
+
 ## 0.2.0 — 2026-09-27
 
 Data safety

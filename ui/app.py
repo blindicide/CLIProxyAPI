@@ -143,9 +143,13 @@ def quota_from_auth_files(payload: Any, now: datetime) -> dict[str, Any]:
         limits = ratelimit_from_signals(signals) if signals else None
         if limits:
             for window in limits["windows"].values():
-                window["reset"] = _epoch_times(window.pop("reset_epoch"))
+                epoch = window.pop("reset_epoch")
+                window["reset"] = _epoch_times(epoch)
                 util = window["utilization"]
+                # used_pct is as observed on the last upstream response. Once the window's reset
+                # time has passed, that figure no longer describes the current window.
                 window["used_pct"] = round(util * 100, 1) if util is not None else None
+                window["reset_passed"] = epoch is not None and epoch <= now.timestamp()
             limits["reset"] = _epoch_times(limits.pop("reset_epoch"))
         cooldowns = item.get("cooldowns") if isinstance(item.get("cooldowns"), list) else []
         credentials.append(

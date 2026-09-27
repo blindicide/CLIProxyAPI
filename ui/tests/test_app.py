@@ -79,3 +79,16 @@ async def test_models(loaded):
     rows = {row["id"]: row for row in body["models"]}
     assert rows["claude-opus-5"]["price"]["input"] == 5.00
     assert rows["claude-3-7-sonnet-20250219"]["price_status"] == "unpriced_legacy"
+
+
+async def test_quota_flags_windows_that_reset_since_observation(make_app, mgmt, api_client, monkeypatch):
+    import app as app_module
+    from datetime import UTC, datetime
+
+    # Fixture resets: 5h at 1790531400 (17:50Z), 7d at 1790535600 (19:00Z) on 2026-09-27.
+    monkeypatch.setattr(app_module, "utc_now", lambda: datetime(2026, 9, 27, 18, 0, tzinfo=UTC))
+    async with api_client(make_app()) as client:
+        windows = (await client.get("/api/quota")).json()["credentials"][0]["limits"]["windows"]
+    assert windows["5h"]["reset_passed"] is True
+    assert windows["5h"]["used_pct"] == 0.0  # still the observed figure, flagged, not invented
+    assert windows["7d"]["reset_passed"] is False and windows["7d"]["used_pct"] == 72.0
