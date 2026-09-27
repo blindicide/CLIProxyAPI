@@ -10,6 +10,9 @@ Versions are shown in the dashboard header/footer, `/api/health` and
 - Quota windows whose reset time has passed since the last observed upstream
   response are flagged (`reset_passed`) and shown as "unknown" instead of
   presenting the old utilisation as current.
+- Runtime and test dependencies split; tests move to pytest >= 9.0.3
+  (PYSEC-2026-1845, predictable `/tmp/pytest-of-<user>`); `requirements.lock`
+  pins the exact tested set, which pip-audit reports clean.
 
 ## 0.2.0 — 2026-09-27
 

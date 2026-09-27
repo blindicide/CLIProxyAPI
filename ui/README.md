@@ -123,7 +123,7 @@ one-sided edit fails.
 ## Development
 
 ```bash
-python3 -m venv venv && venv/bin/pip install -r requirements.txt
+python3 -m venv venv && venv/bin/pip install -r requirements.lock   # exact tested set (runtime + tests)
 venv/bin/pytest -q
 CPROXY_MANAGEMENT_KEY=... venv/bin/uvicorn app:app --host 127.0.0.1 --port 24689   # dev port; 24688 is production
 ```
@@ -131,6 +131,12 @@ CPROXY_MANAGEMENT_KEY=... venv/bin/uvicorn app:app --host 127.0.0.1 --port 24689
 Running a second instance against the live cproxy **steals usage records** from
 production (the queue pops). For UI work, point `CPROXY_MANAGEMENT_URL` at a mock,
 or use `create_app(start_poller=False)`.
+
+Dependencies: `requirements.txt` (runtime ranges), `requirements-dev.txt`
+(adds pytest), `requirements.lock` (the exact versions tested and deployed).
+To upgrade: `venv/bin/pip install -U -r requirements-dev.txt`, run the suite,
+audit (`pip-audit -r requirements.lock`, from a separate venv), then regenerate
+the lock with `venv/bin/pip freeze` (keep its header).
 
 Tests use `httpx.MockTransport` for the management API and `httpx.ASGITransport`
 for the app; no network, no sleeps (time-dependent behaviour takes an injectable

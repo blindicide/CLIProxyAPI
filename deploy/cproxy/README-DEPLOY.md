@@ -192,7 +192,7 @@ update `_ROWS`, `AS_OF` and `tests/test_pricing.py::EXPECTED` together.
 ### Ops
 
 ```bash
-cd ui && python3 -m venv venv && venv/bin/pip install -r requirements.txt
+cd ui && python3 -m venv venv && venv/bin/pip install -r requirements.lock   # exact tested versions
 venv/bin/pytest -q                       # tests (uses tests/fixtures/*.redacted.json in a clean checkout)
 sudo systemctl status|restart cproxy-ui
 journalctl -u cproxy-ui -f

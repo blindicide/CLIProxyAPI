@@ -1,0 +1,5 @@
+# Test dependencies (not needed by the running service).
+-r requirements.txt
+# >= 9.0.3: PYSEC-2026-1845 (predictable /tmp/pytest-of-<user> directory).
+pytest>=9.0.3,<10
+pytest-asyncio>=1.4,<2
