@@ -3,6 +3,13 @@
 Versions are shown in the dashboard header/footer, `/api/health` and
 `/api/analytics` (`ui/version.py`).
 
+## Unreleased
+
+- `tools/smoke.py`: one-command acceptance check (services, strict health,
+  pricing, analytics, dashboard version, `/v1/models` = 17, independent totals,
+  conservation audit; `--completion` optional). `/api/health?strict=1` answers
+  503 when degraded, for monitors.
+
 ## 0.3.0 — 2026-09-27 (tag `cproxy-ui-v0.3`)
 
 History: never lost, archived not deleted

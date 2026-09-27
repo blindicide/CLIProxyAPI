@@ -22,6 +22,7 @@ server-side and returned by `/api/health` and `/api/analytics`.
 | `archiver.py` | daily verified archiving of records older than 180 days (never deletes; journaled rewrite) |
 | `tools/datastore.py` | backup / verify / merge-restore / archive / status for `requests.jsonl` |
 | `tools/scale_test.py` | scale test on a throwaway instance with a mock management API; memory-guarded (default 2k, max 20k records on this host, `--off-host` for larger runs on a dedicated machine) |
+| `tools/smoke.py` | one-command acceptance check (mandate §11), PASS/FAIL per check, exit code; `--completion` sends one real request |
 | `tools/verify_totals.py` | independent recomputation of totals from `requests.jsonl` vs `/api/analytics` |
 | `dashboard.html` | the whole UI: inline CSS + vanilla JS + inline SVG charts, no external assets |
 | `tests/` | pytest suite; `fixtures/usage_queue_sample.redacted.json` holds real captured queue records |

@@ -541,7 +541,7 @@ def create_app(
         return HTMLResponse(dashboard_html, headers=dashboard_headers)
 
     @app.api_route("/api/health", methods=["GET", "HEAD"])
-    async def health() -> JSONResponse:
+    async def health(strict: bool = Query(False, description="answer 503 when degraded (for monitors)")) -> JSONResponse:
         now = utc_now()
         mgmt = management_status(now)
         payload = {
@@ -556,7 +556,7 @@ def create_app(
             "ingest": ingest_status(now),
             "pricing": {"source_url": SOURCE_URL, "as_of": AS_OF},
         }
-        return JSONResponse(payload)
+        return JSONResponse(payload, status_code=503 if strict and payload["status"] != "ok" else 200)
 
     @app.get("/api/analytics")
     async def analytics(window: str = Query("24h")) -> JSONResponse:

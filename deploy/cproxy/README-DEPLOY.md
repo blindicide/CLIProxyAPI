@@ -385,7 +385,14 @@ sudo systemctl status|restart cproxy-ui
 journalctl -u cproxy-ui -f
 curl -s http://127.0.0.1:24688/api/health | python3 -m json.tool
 cd ui && venv/bin/python tools/verify_totals.py   # dashboard totals == independent recomputation (exit 0)
+cd ui && venv/bin/python tools/smoke.py           # full acceptance check (services, health, pricing, analytics,
+                                                  # dashboard version, /v1/models 17, totals, audit); --completion
+                                                  # adds one real completion (uses quota)
 ```
+
+Monitors: `GET /api/health?strict=1` answers **503 when degraded** (management API
+unreachable or writes pending); without `strict` it always answers 200 so the
+dashboard can show the degraded state.
 
 `/api/health` returns `status: degraded` with `management.last_error` when the
 management API is unreachable; the dashboard then shows a red stale banner
