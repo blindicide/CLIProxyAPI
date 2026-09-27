@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -139,15 +140,14 @@ def ratelimit_from_signals(signals: dict[str, str]) -> dict[str, Any]:
 
     def as_float(value: Any) -> float | None:
         try:
-            return float(value)
-        except (TypeError, ValueError):
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
             return None
+        return number if math.isfinite(number) else None
 
     def as_epoch(value: Any) -> int | None:
-        try:
-            return int(float(value))
-        except (TypeError, ValueError):
-            return None
+        number = as_float(value)
+        return int(number) if number is not None else None
 
     windows = {}
     for window in ("5h", "7d"):
@@ -212,29 +212,71 @@ def _endpoint_path(endpoint: str) -> str:
     return parts[1] if len(parts) == 2 else endpoint
 
 
+MIN_SCRUB_KEY_LENGTH = 8  # real client keys are long; scrubbing "1" would rewrite "HTTP 401"
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _number(value: Any) -> float | int | None:
+    """A finite, non-negative number, or None (queue JSON may carry NaN/Infinity/garbage)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value if value >= 0 else None
+
+
+def _clean(value: Any) -> Any:
+    """Recursively drop non-finite floats: API responses must be strict JSON."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): _clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clean(v) for v in value]
+    return value
+
+
+def _scrub(value: Any, secret: str, replacement: str) -> Any:
+    """Replace the secret inside string values (never in keys or structure)."""
+    if isinstance(value, str):
+        return value.replace(secret, replacement) if secret in value else value
+    if isinstance(value, dict):
+        return {k: _scrub(v, secret, replacement) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(v, secret, replacement) for v in value]
+    return value
+
+
 def normalize_record(raw: dict[str, Any], key_names: dict[str, str], ingested_at: datetime | None = None) -> dict[str, Any]:
-    """Build the persisted form of one queue record. The raw ``api_key`` never leaves this function."""
-    raw_key = raw.get("api_key") if isinstance(raw.get("api_key"), str) else None
+    """Build the persisted form of one queue record. The raw ``api_key`` never leaves this function.
+
+    Every field is typed here, at the boundary: strings are strings or None, numbers are finite,
+    so nothing downstream (pricing, analytics, JSON responses) ever sees garbage types."""
+    raw_key = _text(raw.get("api_key")) or None
     ts = parse_ts(raw.get("timestamp"))
     fail = raw.get("fail") if isinstance(raw.get("fail"), dict) else {}
     headers = _headers(raw)
-    endpoint = str(raw.get("endpoint") or "")
+    endpoint = _text(raw.get("endpoint")) or ""
     status_code = fail.get("status_code")
     try:
-        status_code = int(status_code) if status_code is not None else None
-    except (TypeError, ValueError):
+        status_code = int(status_code) if isinstance(status_code, (int, float, str)) and not isinstance(status_code, bool) else None
+    except (TypeError, ValueError, OverflowError):
         status_code = None
-    fail_body = str(fail.get("body") or "")[:FAIL_BODY_LIMIT]
+    body = fail.get("body")
+    fail_body = (body if isinstance(body, str) else ("" if body is None else json.dumps(_clean(body), default=str)))[:FAIL_BODY_LIMIT]
     record = {
         "id": record_id(raw),
         "timestamp": iso_utc(ts) if ts else None,
-        "timestamp_source": raw.get("timestamp"),
+        "timestamp_source": _text(raw.get("timestamp")),
         "ingested_at": iso_utc(ingested_at or utc_now()),
-        "model": raw.get("model") or raw.get("alias") or "unknown",
-        "alias": raw.get("alias"),
-        "response_model": raw.get("response_model"),
-        "provider": raw.get("provider"),
-        "executor_type": raw.get("executor_type"),
+        "model": _text(raw.get("model")) or _text(raw.get("alias")) or "unknown",
+        "alias": _text(raw.get("alias")),
+        "response_model": _text(raw.get("response_model")),
+        "provider": _text(raw.get("provider")),
+        "executor_type": _text(raw.get("executor_type")),
         "endpoint": endpoint,
         "endpoint_path": _endpoint_path(endpoint),
         "stream": bool(raw.get("stream")),
@@ -242,35 +284,33 @@ def normalize_record(raw: dict[str, Any], key_names: dict[str, str], ingested_at
         "failed": bool(raw.get("failed")),
         "status_code": status_code,
         "fail_body": fail_body,
-        "latency_ms": raw.get("latency_ms"),
-        "ttft_ms": raw.get("ttft_ms"),
-        "source": raw.get("source"),
-        "auth_index": raw.get("auth_index"),
-        "auth_type": raw.get("auth_type"),
-        "access_token_sha256": raw.get("access_token_sha256"),
-        "client_ip": raw.get("client_ip"),
-        "resolved_client_ip": raw.get("resolved_client_ip"),
-        "x_forwarded_for": raw.get("x_forwarded_for"),
-        "user_agent": raw.get("user_agent"),
+        "latency_ms": _number(raw.get("latency_ms")),
+        "ttft_ms": _number(raw.get("ttft_ms")),
+        "source": _text(raw.get("source")),
+        "auth_index": _text(raw.get("auth_index")),
+        "auth_type": _text(raw.get("auth_type")),
+        "access_token_sha256": _text(raw.get("access_token_sha256")),
+        "client_ip": _text(raw.get("client_ip")),
+        "resolved_client_ip": _text(raw.get("resolved_client_ip")),
+        "x_forwarded_for": _text(raw.get("x_forwarded_for")),
+        "user_agent": _text(raw.get("user_agent")),
         "api_key_masked": mask_key(raw_key),
         "api_key_name": (key_names.get(key_hash(raw_key)) if raw_key else None) or ("unknown-key" if raw_key else "no-key"),
-        "tokens": raw.get("tokens") if isinstance(raw.get("tokens"), dict) else {},
-        "token_breakdown": raw.get("token_breakdown") if isinstance(raw.get("token_breakdown"), dict) else {},
-        "accounting_version": raw.get("accounting_version"),
-        "request_id": raw.get("request_id"),
-        "execution_id": raw.get("execution_id"),
-        "trace_id": raw.get("trace_id"),
-        "session_id": raw.get("session_id"),
-        "reasoning_effort": raw.get("reasoning_effort"),
-        "service_tier": raw.get("service_tier"),
+        "tokens": _clean(raw.get("tokens")) if isinstance(raw.get("tokens"), dict) else {},
+        "token_breakdown": _clean(raw.get("token_breakdown")) if isinstance(raw.get("token_breakdown"), dict) else {},
+        "accounting_version": _number(raw.get("accounting_version")),
+        "request_id": _text(raw.get("request_id")),
+        "execution_id": _text(raw.get("execution_id")),
+        "trace_id": _text(raw.get("trace_id")),
+        "session_id": _text(raw.get("session_id")),
+        "reasoning_effort": _text(raw.get("reasoning_effort")),
+        "service_tier": _text(raw.get("service_tier")),
         "upstream_request_id": headers.get("request-id"),
         "ratelimit": ratelimit_from_signals(headers) if headers else None,
     }
-    if raw_key:
-        # Defence in depth: scrub the raw key from every string field (e.g. echoed error bodies).
-        text = json.dumps(record, ensure_ascii=False)
-        if raw_key in text:
-            record = json.loads(text.replace(raw_key, record["api_key_masked"] or "[masked]"))
+    if raw_key and len(raw_key) >= MIN_SCRUB_KEY_LENGTH:
+        # Defence in depth: scrub the raw key from every string value (e.g. echoed error bodies).
+        record = _scrub(record, raw_key, record["api_key_masked"] or "[masked]")
     return record
 
 
@@ -305,6 +345,7 @@ class RecordStore:
             "archive_last_error": None,
             "archive_last_result": None,
             "reconcile_missing": 0,
+            "quarantined": 0,
         }
         self._load()
 
@@ -366,7 +407,9 @@ class RecordStore:
         batch = self.pending + fresh
         if not batch:
             return 0
-        lines = [json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n" for record in batch]
+        # ensure_ascii: characters such as U+2028 or \x85 would otherwise be written raw, and
+        # str.splitlines()-style readers (and some tools) would split one record across lines.
+        lines = [json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n" for record in batch]
         start: int | None = None
         try:
             self.requests_path.parent.mkdir(parents=True, exist_ok=True)
@@ -399,6 +442,24 @@ class RecordStore:
         self.state["total_ingested"] += len(batch)
         self.state["last_ingest_at"] = iso_utc(utc_now())
         return len(batch)
+
+    def quarantine(self, raw: Any, error: str) -> None:
+        """Keep a record that could not be normalised (never drop it): data/quarantine.jsonl,
+        with the api_key masked like everywhere else."""
+        item = dict(raw) if isinstance(raw, dict) else {"value": raw}
+        key = item.get("api_key")
+        if isinstance(key, str) and key:
+            item = _scrub(item, key, mask_key(key) or "[masked]") if len(key) >= MIN_SCRUB_KEY_LENGTH else item
+            item["api_key"] = mask_key(key)
+        line = json.dumps({"quarantined_at": iso_utc(utc_now()), "error": error, "record": item}, default=str) + "\n"
+        path = self.state_path.parent / "quarantine.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+        self.state["quarantined"] = int(self.state.get("quarantined") or 0) + 1
+        logger.error("quarantined a usage record that could not be normalised: %s", error)
 
     def _rollback(self, size: int) -> None:
         """Truncate requests.jsonl to ``size`` (only this process appends to it)."""
@@ -470,7 +531,10 @@ async def drain_queue(
                 continue
             if item.get("refresh") or item.get("support_refresh"):
                 continue
-            normalised.append(normalize_record(item, key_names))
+            try:
+                normalised.append(normalize_record(item, key_names))
+            except Exception as exc:  # noqa: BLE001 - the record was already popped: keep it
+                store.quarantine(item, f"{type(exc).__name__}: {exc}")
         popped += len(items)
         stored += store.append(normalised)
         ids.extend(r["id"] for r in normalised)

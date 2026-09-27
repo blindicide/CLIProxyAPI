@@ -145,6 +145,14 @@ To upgrade: `venv/bin/pip install -U -r requirements-dev.txt`, run the suite,
 audit (`pip-audit -r requirements.lock`, from a separate venv), then regenerate
 the lock with `venv/bin/pip freeze` (keep its header).
 
+`tests/test_properties.py` fuzzes the ingest and cost paths with Hypothesis
+(deterministic seed, 150 examples per property): random and malformed queue
+records never crash normalisation or the drain, every popped record is stored
+or kept in `data/quarantine.jsonl` (never dropped), the raw key never survives,
+no NaN/Infinity reaches an API response, and every cost lies within the rates of
+its pricing-table row. The records that crashed older code are pinned as
+explicit examples.
+
 `tests/js/dashboard.test.mjs` runs the dashboard's real inline script under
 Node with a minimal DOM stub (escaping/XSS guard, formatters, DST-safe bucket
 filling, stale quota rendering, chart summaries); `test_dashboard_js.py` runs it

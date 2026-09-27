@@ -11,6 +11,7 @@ h11==0.16.0
 httpcore==1.0.9
 httptools==0.8.0
 httpx==0.28.1
+hypothesis==6.168.2
 idna==3.20
 iniconfig==2.3.0
 packaging==26.3
@@ -22,6 +23,7 @@ pytest==9.1.1
 pytest-asyncio==1.4.0
 python-dotenv==1.2.3
 PyYAML==6.0.3
+sortedcontainers==2.4.0
 starlette==1.7.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0

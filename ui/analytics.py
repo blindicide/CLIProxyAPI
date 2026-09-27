@@ -126,9 +126,9 @@ def short_user_agent(ua: str | None) -> str:
 def _num(value: Any) -> float | None:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    return number if number >= 0 else None
+    return number if math.isfinite(number) and number >= 0 else None
 
 
 def _new_group(key: str) -> dict[str, Any]:

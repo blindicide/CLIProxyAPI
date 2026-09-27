@@ -73,7 +73,7 @@ PRICING: dict[str, dict[str, Any]] = _build_table()
 
 def resolve_model(model: str | None) -> str | None:
     """Map a served model id (possibly date-suffixed or an alias) onto its pricing row id."""
-    if not model:
+    if not isinstance(model, str) or not model:
         return None
     model = model.strip().lower()
     if model in PRICING:
@@ -93,11 +93,19 @@ def price_for(model: str | None) -> dict[str, Any] | None:
     return PRICING.get(model_id) if model_id else None
 
 
+# A single request cannot plausibly exceed this many tokens; larger values are corrupt data and
+# are ignored (like negatives and non-numbers) rather than priced into absurd costs.
+MAX_TOKENS = 10**9
+
+
 def _int(value: Any) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return number if 0 <= number <= MAX_TOKENS else 0
 
 
 def token_usage(record: dict[str, Any]) -> dict[str, Any]:

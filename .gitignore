@@ -83,3 +83,4 @@ deploy/cproxy-ui.env
 ui/tests/fixtures/usage_queue_sample.json
 # retired credential material
 retired/
+ui/.hypothesis/

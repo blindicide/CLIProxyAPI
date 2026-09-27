@@ -23,6 +23,16 @@ Versions are shown in the dashboard header/footer, `/api/health` and
   recovery and counter reconciliation under that lock at startup; unique
   pre-restore/pre-archive names; `archive_due` tolerates a clock that went
   back; `POP_BATCH` 50 → 10 (the proven worst-case loss per SIGKILL).
+- Property/fuzz tests (Hypothesis) and the bugs they found: the key scrub
+  rewrote serialised JSON and crashed on keys like `"`, `,`, `1` or `id` (it now
+  replaces inside string values only, keys ≥ 8 chars); a non-string `model`
+  crashed pricing; infinite token counts overflowed; NaN/Infinity from queue
+  JSON reached responses (strict JSON 500). `normalize_record` now types every
+  field at the boundary, token counts above 10^9 are treated as corrupt, and
+  a record that still fails to normalise is kept in `data/quarantine.jsonl`
+  instead of aborting its batch.
+- `requests.jsonl` is written ASCII-only (`\uXXXX` escapes), so a record is
+  always exactly one physical line even for readers that split on U+2028/`\x85`.
 
 ## 0.3.0 — 2026-09-27 (tag `cproxy-ui-v0.3`)
 

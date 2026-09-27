@@ -172,3 +172,13 @@ def test_rollback_deferred_when_it_cannot_run_yet(tmp_path, sample, monkeypatch)
     assert store.append([normalize_record(sample[1], {})]) == 1
     lines = (tmp_path / "requests.jsonl").read_text().splitlines()
     assert len(lines) == 2 and all(json.loads(line)["id"] for line in lines)
+
+
+def test_unicode_line_separators_never_split_a_record(tmp_path, sample):
+    store = _store(tmp_path)
+    raw = copy.deepcopy(sample[0])
+    raw["user_agent"] = "agent with\x85odd\x1cbreaks "
+    store.append([normalize_record(raw, {})])
+    text = (tmp_path / "requests.jsonl").read_text()
+    assert len(text.splitlines()) == 1 and text.isascii()
+    assert _store(tmp_path).records[0]["user_agent"] == raw["user_agent"]  # content preserved

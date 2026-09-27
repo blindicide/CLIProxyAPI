@@ -381,6 +381,7 @@ async function refresh(){
       if(ar.last_error)banner.push("Archiving failed, nothing was removed: "+ar.last_error);
       if(ar.lock_held_warning)banner.push("Archiving: "+ar.lock_held_warning);
       if(a.ingest.reconcile_missing)banner.push(`${a.ingest.reconcile_missing} record(s) counted as ingested are missing from requests.jsonl and the archives (see tools/datastore.py audit).`);
+      if(a.ingest.quarantined)banner.push(`${a.ingest.quarantined} usage record(s) could not be parsed and were kept in data/quarantine.jsonl.`);
       if(a.ingest.corrupt_lines)banner.push(`${a.ingest.corrupt_lines} corrupt line(s) in requests.jsonl ignored (kept on disk).`);
     }else{
       setLive("bad","dashboard API error");

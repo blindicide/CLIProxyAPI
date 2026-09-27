@@ -3,3 +3,5 @@
 # >= 9.0.3: PYSEC-2026-1845 (predictable /tmp/pytest-of-<user> directory).
 pytest>=9.0.3,<10
 pytest-asyncio>=1.4,<2
+# Property-based fuzzing of the ingest and cost paths (tests/test_properties.py).
+hypothesis>=6.100,<7

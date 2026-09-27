@@ -608,6 +608,7 @@ def create_app(
             "corrupt_lines": app.state.store.corrupt_lines,
             "pending_writes": len(app.state.store.pending),
             "reconcile_missing": state.get("reconcile_missing") or 0,
+            "quarantined": state.get("quarantined") or 0,
             "last_write_error": state.get("last_write_error"),
             "last_drain_at": state.get("last_drain_at"),
             "last_ingest_at": state.get("last_ingest_at"),
