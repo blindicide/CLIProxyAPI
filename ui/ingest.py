@@ -400,14 +400,24 @@ class RecordStore:
 Fetch = Callable[..., Awaitable[Any]]
 
 
-async def drain_queue(fetch: Fetch, store: RecordStore, key_names: dict[str, str], *, max_pops: int = MAX_POPS_PER_CYCLE, batch: int = POP_BATCH) -> dict[str, Any]:
+async def drain_queue(
+    fetch: Fetch,
+    store: RecordStore,
+    key_names: dict[str, str],
+    *,
+    max_pops: int = MAX_POPS_PER_CYCLE,
+    batch: int = POP_BATCH,
+    stop: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     """Pop the usage queue until it returns ``[]`` (bounded), persisting every batch before the next pop.
 
-    ``fetch(path, **params)`` returns the decoded JSON body of a management GET.
+    ``fetch(path, **params)`` returns the decoded JSON body of a management GET. ``stop()`` is
+    checked before each pop: once shutdown starts no new pop begins, but one already in flight
+    is still persisted.
     """
     popped = stored = pops = 0
     ids: list[str] = []
-    while pops < max_pops:
+    while pops < max_pops and not (stop and stop()):
         payload = await fetch("usage-queue", count=batch)
         pops += 1
         items = payload if isinstance(payload, list) else []

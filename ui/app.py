@@ -32,6 +32,9 @@ STALE_AFTER_SECONDS = 30.0
 # Identical /api/analytics queries within this many seconds reuse the last result unless
 # new records arrived; the dashboard polls every 30 s per viewer.
 ANALYTICS_TTL_SECONDS = 5.0
+# On shutdown, let an in-flight queue pop finish and be persisted (cproxy has already removed
+# those records). Longer than the 10 s HTTP timeout, well below systemd's 90 s stop timeout.
+SHUTDOWN_GRACE_SECONDS = 15.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("cproxy-ui")
@@ -196,12 +199,17 @@ def create_app(
         try:
             yield
         finally:
+            app.state.stopping.set()
             if task:
-                task.cancel()
                 try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+                    await asyncio.wait_for(asyncio.shield(task), SHUTDOWN_GRACE_SECONDS)
+                except TimeoutError:
+                    logger.error("usage drain still running after %.0f s grace; cancelling", SHUTDOWN_GRACE_SECONDS)
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
             if app.state.own_client:
                 await app.state.client.aclose()
 
@@ -218,6 +226,7 @@ def create_app(
     app.state.started_at = time.monotonic()
     app.state.last_drain = None
     app.state.drain_lock = asyncio.Lock()
+    app.state.stopping = asyncio.Event()
     app.state.derived = DerivedCache()
     app.state.analytics_cache = {}
 
@@ -247,7 +256,7 @@ def create_app(
             try:
                 await refresh_key_names(app)
                 started = utc_now()
-                result = await drain_queue(app.state.management.get, store, app.state.key_names)
+                result = await drain_queue(app.state.management.get, store, app.state.key_names, stop=app.state.stopping.is_set)
             except ManagementError as exc:
                 store.state["last_error"] = str(exc)
                 store.state["last_error_at"] = iso_utc(utc_now())
@@ -268,7 +277,8 @@ def create_app(
     app.state.drain_once = drain_once
 
     async def poller(app: FastAPI) -> None:
-        while True:
+        stopping: asyncio.Event = app.state.stopping
+        while not stopping.is_set():
             try:
                 result = await drain_once(app)
                 if result["exhausted"]:
@@ -277,7 +287,10 @@ def create_app(
                 logger.warning("usage drain failed: %s", exc)
             except Exception:
                 logger.exception("usage drain crashed")
-            await asyncio.sleep(poll_interval)
+            try:
+                await asyncio.wait_for(stopping.wait(), poll_interval)
+            except TimeoutError:
+                pass
 
     def management_status(now: datetime) -> dict[str, Any]:
         state = app.state.store.state
