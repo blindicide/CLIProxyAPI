@@ -112,9 +112,9 @@ def mgmt(raw_key: str) -> MockManagement:
 def make_app(tmp_path: Path, mgmt: MockManagement) -> Callable[..., Any]:
     from app import create_app
 
-    def factory(data_dir: Path | None = None) -> Any:
+    def factory(data_dir: Path | None = None, **kwargs: Any) -> Any:
         client = httpx.AsyncClient(transport=httpx.MockTransport(mgmt.handler))
-        return create_app(management_url=MGMT_URL, management_key=MGMT_KEY, client=client, data_dir=data_dir or tmp_path, start_poller=False)
+        return create_app(management_url=MGMT_URL, management_key=MGMT_KEY, client=client, data_dir=data_dir or tmp_path, start_poller=False, **kwargs)
 
     return factory
 

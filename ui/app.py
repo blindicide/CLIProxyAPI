@@ -12,9 +12,10 @@ from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from analytics import WINDOWS, aggregate, local_iso, recent
+from analytics import WINDOWS, DerivedCache, aggregate, local_iso, recent
 from ingest import RecordStore, drain_queue, iso_utc, key_names_from_config, mask_key, parse_ts, ratelimit_from_signals, utc_now
 from pricing import AS_OF, BASIS, PRICING, SOURCE_URL, pricing_payload, resolve_model
 from version import BUILD_DATE, SERVICE, VERSION
@@ -25,6 +26,9 @@ POLL_INTERVAL_SECONDS = 2.0
 KEY_NAMES_TTL_SECONDS = 60.0
 # A management call is "fresh" if the poller succeeded within this many seconds.
 STALE_AFTER_SECONDS = 30.0
+# Identical /api/analytics queries within this many seconds reuse the last result unless
+# new records arrived; the dashboard polls every 30 s per viewer.
+ANALYTICS_TTL_SECONDS = 5.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("cproxy-ui")
@@ -148,6 +152,7 @@ def create_app(
     data_dir: Path = ROOT,
     poll_interval: float = POLL_INTERVAL_SECONDS,
     start_poller: bool = True,
+    clock: Any = time.monotonic,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -174,6 +179,8 @@ def create_app(
     app.state.started_at = time.monotonic()
     app.state.last_drain = None
     app.state.drain_lock = asyncio.Lock()
+    app.state.derived = DerivedCache()
+    app.state.analytics_cache = {}
 
     async def refresh_key_names(app: FastAPI, force: bool = False) -> None:
         if force or time.monotonic() - app.state.key_names_at > KEY_NAMES_TTL_SECONDS:
@@ -269,7 +276,15 @@ def create_app(
         if window not in WINDOWS:
             return JSONResponse({"error": f"window must be one of {', '.join(WINDOWS)}"}, status_code=400)
         now = utc_now()
-        result = aggregate(app.state.store.records, window, now)
+        records = app.state.store.records
+        cached = app.state.analytics_cache.get(window)
+        if cached and cached[1] == len(records) and clock() - cached[0] < ANALYTICS_TTL_SECONDS:
+            result = dict(cached[2])
+        else:
+            # CPU-bound: run off the event loop so the usage poller keeps draining meanwhile.
+            computed = await run_in_threadpool(aggregate, list(records), window, now, app.state.derived)
+            app.state.analytics_cache[window] = (clock(), len(records), computed)
+            result = dict(computed)
         result["version"] = VERSION
         result["management"] = management_status(now)
         result["ingest"] = ingest_status(now)
@@ -282,8 +297,9 @@ def create_app(
 
     @app.get("/api/requests")
     async def requests(limit: int = Query(100, ge=1, le=5000)) -> JSONResponse:
-        records = app.state.store.records
-        return JSONResponse({"total": len(records), "limit": limit, "requests": recent(records, limit)})
+        records = list(app.state.store.records)
+        rows = await run_in_threadpool(recent, records, limit)
+        return JSONResponse({"total": len(records), "limit": limit, "requests": rows})
 
     @app.get("/api/quota")
     async def quota() -> JSONResponse:

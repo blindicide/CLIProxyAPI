@@ -1,6 +1,7 @@
 """Aggregation of persisted usage records into dashboard analytics."""
 from __future__ import annotations
 
+import heapq
 import math
 import re
 from datetime import datetime, timedelta
@@ -23,19 +24,71 @@ def local_iso(dt: datetime | None) -> str | None:
     return dt.astimezone(LOCAL_TZ).isoformat() if dt else None
 
 
-def filter_window(records: Iterable[dict[str, Any]], window: str, now: datetime | None = None) -> list[dict[str, Any]]:
+class Derived:
+    """Per-record fields the aggregation needs, computed once (timestamps, cost, group keys)."""
+
+    __slots__ = ("ts", "day", "hour", "cost", "usage", "model", "key_name", "key_masked", "endpoint", "ip", "ua", "failed", "stream", "latency", "ttft", "status")
+
+    def __init__(self, record: dict[str, Any]) -> None:
+        self.ts = parse_ts(record.get("timestamp"))
+        local = self.ts.astimezone(LOCAL_TZ) if self.ts else None
+        self.day = local.strftime("%Y-%m-%d") if local else None
+        self.hour = local.strftime("%Y-%m-%dT%H:00") if local else None
+        self.cost = record_cost(record)
+        self.usage = self.cost["usage"]
+        self.model = str(record.get("model") or "unknown")
+        self.key_name = str(record.get("api_key_name") or "no-key")
+        self.key_masked = record.get("api_key_masked")
+        self.endpoint = str(record.get("endpoint_path") or record.get("endpoint") or "unknown")
+        self.ip = str(record.get("resolved_client_ip") or record.get("client_ip") or "unknown")
+        self.ua = short_user_agent(record.get("user_agent"))
+        self.failed = bool(record.get("failed"))
+        self.stream = bool(record.get("stream"))
+        self.latency = _num(record.get("latency_ms"))
+        self.ttft = _num(record.get("ttft_ms"))
+        self.status = str(record.get("status_code") if record.get("status_code") is not None else "unknown")
+
+
+class DerivedCache:
+    """Memoises ``Derived`` per record object.
+
+    Keyed by object identity and holding a reference to the record, so an id can never be
+    reused by a different object while its entry is alive. Stored records are never mutated,
+    which keeps the cached values valid for the life of the process.
+    """
+
+    def __init__(self) -> None:
+        self._items: dict[int, tuple[dict[str, Any], Derived]] = {}
+
+    def get(self, record: dict[str, Any]) -> Derived:
+        hit = self._items.get(id(record))
+        if hit is not None and hit[0] is record:
+            return hit[1]
+        derived = Derived(record)
+        self._items[id(record)] = (record, derived)
+        return derived
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+def _derive(records: Iterable[dict[str, Any]], cache: DerivedCache | None) -> list[tuple[dict[str, Any], Derived]]:
+    get = cache.get if cache is not None else Derived
+    return [(record, get(record)) for record in records]
+
+
+def filter_window(records: Iterable[dict[str, Any]], window: str, now: datetime | None = None, cache: DerivedCache | None = None) -> list[dict[str, Any]]:
+    return [record for record, _ in _select(_derive(records, cache), window, now or utc_now())]
+
+
+def _select(pairs: list[tuple[dict[str, Any], Derived]], window: str, now: datetime) -> list[tuple[dict[str, Any], Derived]]:
     if window not in WINDOWS:
         raise ValueError(f"unknown window {window!r}; expected one of {', '.join(WINDOWS)}")
     span = WINDOWS[window]
     if span is None:
-        return list(records)
-    cutoff = (now or utc_now()) - span
-    out = []
-    for record in records:
-        ts = parse_ts(record.get("timestamp"))
-        if ts and ts >= cutoff:
-            out.append(record)
-    return out
+        return pairs
+    cutoff = now - span
+    return [pair for pair in pairs if pair[1].ts and pair[1].ts >= cutoff]
 
 
 def percentile(values: list[float], pct: float) -> float | None:
@@ -76,14 +129,15 @@ def _new_group(key: str) -> dict[str, Any]:
         "cost_usd": 0.0,
         "priced_requests": 0,
         "unpriced_requests": 0,
-        "_latency": [],
+        "_latency_sum": 0.0,
+        "_latency_n": 0,
     }
 
 
-def _add(group: dict[str, Any], record: dict[str, Any], cost: dict[str, Any]) -> None:
-    usage = cost["usage"]
+def _add(group: dict[str, Any], d: Derived) -> None:
+    usage = d.usage
     group["requests"] += 1
-    if record.get("failed"):
+    if d.failed:
         group["failed"] += 1
     else:
         group["success"] += 1
@@ -92,21 +146,22 @@ def _add(group: dict[str, Any], record: dict[str, Any], cost: dict[str, Any]) ->
     group["cache_read_tokens"] += usage["cache_read"]
     group["cache_write_tokens"] += usage["cache_write"]
     group["reasoning_tokens"] += usage["reasoning"]
-    if cost["cost_usd"] is None:
+    cost = d.cost["cost_usd"]
+    if cost is None:
         group["unpriced_requests"] += 1
     else:
         group["priced_requests"] += 1
-        group["cost_usd"] += cost["cost_usd"]
-    latency = _num(record.get("latency_ms"))
-    if latency is not None:
-        group["_latency"].append(latency)
+        group["cost_usd"] += cost
+    if d.latency is not None:
+        group["_latency_sum"] += d.latency
+        group["_latency_n"] += 1
 
 
 def _finish(groups: dict[str, dict[str, Any]], total_requests: int, key_name: str) -> list[dict[str, Any]]:
     rows = []
     for group in groups.values():
-        latency = group.pop("_latency")
-        group["avg_latency_ms"] = round(sum(latency) / len(latency), 1) if latency else None
+        latency_sum, latency_n = group.pop("_latency_sum"), group.pop("_latency_n")
+        group["avg_latency_ms"] = round(latency_sum / latency_n, 1) if latency_n else None
         group["share_pct"] = round(100 * group["requests"] / total_requests, 2) if total_requests else 0.0
         # A group with only unpriced traffic has no cost at all, not a zero cost.
         if group["priced_requests"] == 0:
@@ -133,13 +188,13 @@ def enrich(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def recent(records: list[dict[str, Any]], limit: int = 100) -> list[dict[str, Any]]:
-    ordered = sorted(records, key=lambda r: (str(r.get("timestamp") or ""), str(r.get("ingested_at") or "")), reverse=True)
-    return [enrich(record) for record in ordered[: max(0, limit)]]
+    newest = heapq.nlargest(max(0, limit), records, key=lambda r: (str(r.get("timestamp") or ""), str(r.get("ingested_at") or "")))
+    return [enrich(record) for record in newest]
 
 
-def aggregate(records: list[dict[str, Any]], window: str = "24h", now: datetime | None = None) -> dict[str, Any]:
+def aggregate(records: list[dict[str, Any]], window: str = "24h", now: datetime | None = None, cache: DerivedCache | None = None) -> dict[str, Any]:
     now = now or utc_now()
-    selected = filter_window(records, window, now)
+    selected = _select(_derive(records, cache), window, now)
     per_model: dict[str, dict[str, Any]] = {}
     per_key: dict[str, dict[str, Any]] = {}
     per_endpoint: dict[str, dict[str, Any]] = {}
@@ -158,44 +213,37 @@ def aggregate(records: list[dict[str, Any]], window: str = "24h", now: datetime 
     first_ts: datetime | None = None
     hourly = window == "24h"
 
-    for record in selected:
-        cost = record_cost(record)
-        ts = parse_ts(record.get("timestamp"))
+    for _record, d in selected:
+        ts = d.ts
         if ts and (first_ts is None or ts < first_ts):
             first_ts = ts
-        _add(total, record, cost)
-        model = str(record.get("model") or "unknown")
-        _add(per_model.setdefault(model, _new_group(model)), record, cost)
-        key_name = str(record.get("api_key_name") or "no-key")
-        key_masks[key_name] = record.get("api_key_masked")
-        _add(per_key.setdefault(key_name, _new_group(key_name)), record, cost)
-        endpoint = str(record.get("endpoint_path") or record.get("endpoint") or "unknown")
-        _add(per_endpoint.setdefault(endpoint, _new_group(endpoint)), record, cost)
-        ip = str(record.get("resolved_client_ip") or record.get("client_ip") or "unknown")
-        _add(per_ip.setdefault(ip, _new_group(ip)), record, cost)
-        ua = short_user_agent(record.get("user_agent"))
-        _add(per_ua.setdefault(ua, _new_group(ua)), record, cost)
+        _add(total, d)
+        model = d.model
+        key_masks[d.key_name] = d.key_masked
+        for groups, key in ((per_model, model), (per_key, d.key_name), (per_endpoint, d.endpoint), (per_ip, d.ip), (per_ua, d.ua)):
+            group = groups.get(key)
+            if group is None:
+                group = groups[key] = _new_group(key)
+            _add(group, d)
         if ts:
-            local = ts.astimezone(LOCAL_TZ)
-            day = local.strftime("%Y-%m-%d")
-            _add(per_day.setdefault(day, _new_group(day)), record, cost)
-            bucket = local.strftime("%Y-%m-%dT%H:00") if hourly else day
-            _add(series.setdefault(bucket, _new_group(bucket)), record, cost)
-        latency = _num(record.get("latency_ms"))
-        if latency is not None:
-            latencies.append(latency)
-        ttft = _num(record.get("ttft_ms"))
-        if ttft:
-            ttfts.append(ttft)
-        if record.get("stream"):
+            for groups, key in ((per_day, d.day), (series, d.hour if hourly else d.day)):
+                group = groups.get(key)
+                if group is None:
+                    group = groups[key] = _new_group(key)
+                _add(group, d)
+        if d.latency is not None:
+            latencies.append(d.latency)
+        if d.ttft:
+            ttfts.append(d.ttft)
+        if d.stream:
             stream += 1
         else:
             non_stream += 1
-        cost_quality[cost["cost_quality"]] = cost_quality.get(cost["cost_quality"], 0) + 1
-        if cost["cost_usd"] is None:
+        quality = d.cost["cost_quality"]
+        cost_quality[quality] = cost_quality.get(quality, 0) + 1
+        if d.cost["cost_usd"] is None:
             unpriced_models[model] = unpriced_models.get(model, 0) + 1
-        code = str(record.get("status_code") if record.get("status_code") is not None else "unknown")
-        status_codes[code] = status_codes.get(code, 0) + 1
+        status_codes[d.status] = status_codes.get(d.status, 0) + 1
 
     requests = total["requests"]
     span = WINDOWS[window]
