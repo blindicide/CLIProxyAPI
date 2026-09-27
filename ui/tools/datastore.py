@@ -261,6 +261,10 @@ def _replace_live(ui: Path, tmp: Path, label: str) -> Path:
     """Swap the fsync'd ``tmp`` in, keeping the previous file as requests.jsonl.<label>-<stamp>."""
     live = ui / "requests.jsonl"
     keep = ui / f"requests.jsonl.{label}-{now_stamp()}"
+    n = 1
+    while keep.exists():  # e.g. re-running right after an interrupted run in the same second
+        n += 1
+        keep = ui / f"requests.jsonl.{label}-{now_stamp()}-{n}"
     if live.exists():
         os.link(live, keep)  # the previous file stays reachable under its new name
     os.replace(tmp, live)

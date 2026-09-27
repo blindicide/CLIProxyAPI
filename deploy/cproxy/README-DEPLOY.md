@@ -148,7 +148,7 @@ section, `ExecStartPre` and `UMask`.
 
 ### Data flow
 
-- The poller pops `GET /v0/management/usage-queue?count=50` until it returns
+- The poller pops `GET /v0/management/usage-queue?count=10` until it returns
   `[]` (max 500 pops per cycle), fsyncs each batch into `ui/requests.jsonl`,
   then sleeps 2 s. State: `ui/data/ingest_state.json`. Dedupe key:
   `execution_id:request_id`, so restarts/replays never double-count.
@@ -189,6 +189,38 @@ is read-only here) with:
 K=$(grep '^CPROXY_MANAGEMENT_KEY=' deploy/cproxy.env | cut -d= -f2-)
 curl -s -H "Authorization: Bearer $K" http://127.0.0.1:31524/v0/management/config \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["redis-usage-queue-retention-seconds"])'
+```
+
+### Chaos drills (`ui/tools/chaos_drill.py`)
+
+Real faults against throwaway copies of the app (mock management API, never the
+live queue), each followed by assertions: **conservation** (live ∪ archives ==
+`total_ingested`), **no duplicate** record ids on disk, and for ingest drills a
+**loss bound** (every popped record is durable unless its pop was in flight at a
+SIGKILL). Last full run 2026-09-27, all PASS:
+
+| drill | fault | result |
+|---|---|---|
+| kill_ingest | 12 random SIGKILLs while ingesting 40 rec/s | 881/881 durable, 0 lost |
+| kill_after_pop | SIGKILL after a queue pop, before its fsync | exactly the in-flight batch lost (10 = `POP_BATCH`), 0 unexplained |
+| kill_before_state_save | SIGKILL after fsync, before the state save | counter reconciled from disk at next start |
+| kill_archive | SIGKILL after prepare / mid in-place copy / after commit | journal re-applied, no leftovers, audit ok |
+| kill_restore | SIGKILL mid temp write / before the swap | live file untouched; re-run completes |
+| disk_full | real ENOSPC on a tmpfs | strict health 503, records held in memory, flushed after space returns, 0 lost, 0 duplicates |
+| read_only | tmpfs remounted read-only | same as disk_full with EROFS |
+| clock_jumps | wall clock +2 h, −2 h, +400 d, back | no false loss windows, early archive loses nothing |
+| second_instance | a second service on the same data dir | refused at startup (exit 3), first unaffected |
+
+The first run (before fixes) failed four of these and found: duplicate lines
+after a partial ENOSPC write (now rolled back), false loss windows on clock
+jumps (the gap is now monotonic within a process), no protection against a
+second instance (now a data-dir lock), and a crash re-running an interrupted
+restore within the same second (unique backup names). It also showed that a
+SIGKILL between a queue pop and its fsync loses that batch, since cproxy's queue
+has no ack; the batch size was lowered from 50 to 10 to bound it.
+
+```bash
+cd ui && venv/bin/python tools/chaos_drill.py --workdir /path/outside/ui     # ~90 s; tmpfs drills need sudo mount
 ```
 
 ### Operator decision: the dashboard is public

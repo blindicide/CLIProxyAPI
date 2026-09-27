@@ -16,6 +16,13 @@ Versions are shown in the dashboard header/footer, `/api/health` and
 - Test hang guard (`tests/timeout_guard.py`): a test stuck past 60 s fails
   with a `TimeoutError` traceback and the run continues; faulthandler hard-exits
   as a last resort. Suite checked stable over 8 runs and per file in isolation.
+- Chaos drills (`tools/chaos_drill.py`) and the fixes they forced: failed
+  partial writes are rolled back (no duplicate lines after ENOSPC); loss windows
+  use a monotonic gap within a process (no false alarms on clock jumps);
+  one instance per data dir (`data/.instance.lock`, read-only fd), with crash
+  recovery and counter reconciliation under that lock at startup; unique
+  pre-restore/pre-archive names; `archive_due` tolerates a clock that went
+  back; `POP_BATCH` 50 → 10 (the proven worst-case loss per SIGKILL).
 
 ## 0.3.0 — 2026-09-27 (tag `cproxy-ui-v0.3`)
 

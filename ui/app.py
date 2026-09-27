@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import base64
+import gzip
 import hashlib
 import logging
 import re
 import os
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -279,10 +281,14 @@ def create_app(
     data_dir: Path = ROOT,
     poll_interval: float = POLL_INTERVAL_SECONDS,
     start_poller: bool = True,
+    manage_instance: bool = True,
     clock: Any = time.monotonic,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if manage_instance:
+            acquire_instance_lock(app)  # raises: startup fails, nothing is touched
+            await run_in_threadpool(startup_repair, app)
         task = asyncio.create_task(poller(app)) if start_poller else None
         archive_task = asyncio.create_task(archive_loop(app)) if start_poller else None
         try:
@@ -307,6 +313,10 @@ def create_app(
                         pass
             if app.state.own_client:
                 await app.state.client.aclose()
+            lock = getattr(app.state, "instance_lock", None)
+            if lock is not None:
+                lock.close()  # releases the flock
+                app.state.instance_lock = None
 
     app = FastAPI(title="cproxy analytics", version=VERSION, lifespan=lifespan)
     # Dashboard polls (/api/requests is ~2 KB per row) compress ~8-10x; nginx does not gzip here.
@@ -314,12 +324,6 @@ def create_app(
     app.state.client = client or httpx.AsyncClient(timeout=10)
     app.state.own_client = client is None
     app.state.management = ManagementAPI(management_url, management_key or os.getenv("CPROXY_MANAGEMENT_KEY"), app.state.client)
-    try:
-        recovered = archiver.recover_interrupted_rewrite(data_dir)
-        if recovered:
-            logger.warning("archive rewrite recovery: %s", recovered)
-    except OSError:
-        logger.exception("could not recover an interrupted archive rewrite; requests.jsonl left as is")
     app.state.store = RecordStore(data_dir / "requests.jsonl", data_dir / "data" / "ingest_state.json")
     app.state.key_names = {}
     app.state.key_names_at = 0.0
@@ -329,10 +333,81 @@ def create_app(
     app.state.started_at = time.monotonic()
     app.state.last_drain = None
     app.state.drain_lock = asyncio.Lock()
+    app.state.last_ok_mono = None
+    app.state.instance_lock = None
     app.state.stopping = asyncio.Event()
     app.state.derived = DerivedCache()
     app.state.analytics_cache = {}
     app.state.archive_cache = lifetime.ArchiveCache(data_dir)
+
+    def acquire_instance_lock(app: FastAPI) -> None:
+        """One cproxy-ui per data dir: two would split the usage queue between them and race
+        appends against the archive's in-place rewrite of requests.jsonl."""
+        path = data_dir / "data" / ".instance.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        # Held on a read-only descriptor: flock does not need write access, and no long-lived
+        # writable fd stays open on the data filesystem (it would block a remount, and a
+        # read-only filesystem must not stop the service from starting).
+        handle = open(path, "r")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            raise RuntimeError(f"another cproxy-ui is already running on {data_dir} (lock {path}); refusing to start") from None
+        try:
+            path.write_text(f"{os.getpid()}\n")  # informational only
+        except OSError:
+            pass
+        app.state.instance_lock = handle
+
+    def startup_repair(app: FastAPI) -> None:
+        """Under the instance lock: finish an interrupted archive rewrite, then reconcile counters
+        with what is durably on disk (a SIGKILL between fsync and the state save leaves them behind)."""
+        try:
+            recovered = archiver.recover_interrupted_rewrite(data_dir)
+        except OSError:
+            logger.exception("could not recover an interrupted archive rewrite; requests.jsonl left as is")
+            recovered = None
+        if recovered:
+            logger.warning("archive rewrite recovery: %s", recovered)
+            if recovered == "completed":
+                app.state.store = RecordStore(data_dir / "requests.jsonl", data_dir / "data" / "ingest_state.json")
+                app.state.derived = DerivedCache()
+                app.state.analytics_cache.clear()
+        reconcile_counters(app)
+
+    def reconcile_counters(app: FastAPI) -> dict[str, Any]:
+        store: RecordStore = app.state.store
+        archived: set = set()
+        for path in datastore.archive_files(data_dir):
+            try:
+                with gzip.open(path, "rb") as handle:
+                    archived |= datastore.scan(handle)[1]
+            except (OSError, EOFError) as exc:
+                logger.error("archive %s unreadable during reconciliation: %s", path.name, exc)
+        durable = len(store.ids | archived)
+        counted = int(store.state.get("total_ingested") or 0)
+        result = {"durable": durable, "counted": counted, "archived_only": len(archived - store.ids)}
+        changed = False
+        if durable > counted:
+            # Records that reached disk are ingested by definition; the counter lagged (crash).
+            logger.warning("total_ingested %d lagged the %d records on disk; reconciled", counted, durable)
+            store.state["total_ingested"] = durable
+            changed = True
+        elif durable < counted:
+            store.state["reconcile_missing"] = counted - durable
+            logger.error("%d record(s) counted as ingested are not on disk (live + archives)", counted - durable)
+            changed = True
+        if store.state.get("archived_total") != result["archived_only"]:
+            store.state["archived_total"] = result["archived_only"]
+            changed = True
+        if changed:
+            store.save_state()
+        return result
+
+    app.state.reconcile_counters = reconcile_counters
+    app.state.startup_repair = startup_repair
 
     async def refresh_key_names(app: FastAPI, force: bool = False) -> None:
         if force or time.monotonic() - app.state.key_names_at > KEY_NAMES_TTL_SECONDS:
@@ -366,7 +441,16 @@ def create_app(
                 store.state["last_error_at"] = iso_utc(utc_now())
                 store.save_state()
                 raise
-            window = loss_window(parse_ts(store.state.get("last_ok_at")), started, app.state.queue_retention_s)
+            # Within one process the gap is measured on the monotonic clock, so a wall-clock jump
+            # (NTP step, manual change) cannot fake an outage; across restarts only the persisted
+            # wall-clock time exists.
+            mono_now = time.monotonic()
+            if app.state.last_ok_mono is not None:
+                last_ok = started - timedelta(seconds=mono_now - app.state.last_ok_mono)
+            else:
+                last_ok = parse_ts(store.state.get("last_ok_at"))
+            window = loss_window(last_ok, started, app.state.queue_retention_s)
+            app.state.last_ok_mono = mono_now
             if window:
                 store.note_loss_window(window)
             store.state["last_ok_at"] = store.state["last_drain_at"]
@@ -455,7 +539,8 @@ def create_app(
         if now.astimezone(LOCAL_TZ).hour < ARCHIVE_HOUR:
             return False
         last = parse_ts(app.state.store.state.get("archive_last_attempt_at"))
-        return last is None or (now - last).total_seconds() >= ARCHIVE_MIN_INTERVAL
+        # A last attempt "in the future" means the clock went back: do not wait for that date.
+        return last is None or last > now or (now - last).total_seconds() >= ARCHIVE_MIN_INTERVAL
 
     app.state.archive_due = archive_due
 
@@ -522,6 +607,7 @@ def create_app(
             "malformed_skipped": state.get("malformed_skipped"),
             "corrupt_lines": app.state.store.corrupt_lines,
             "pending_writes": len(app.state.store.pending),
+            "reconcile_missing": state.get("reconcile_missing") or 0,
             "last_write_error": state.get("last_write_error"),
             "last_drain_at": state.get("last_drain_at"),
             "last_ingest_at": state.get("last_ingest_at"),

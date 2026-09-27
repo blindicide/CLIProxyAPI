@@ -197,7 +197,9 @@ async def test_interrupted_rewrite_is_completed_on_start(make_app, mgmt, sample,
         await app.state.archive_once(app, NOW)
     assert (tmp_path / "data" / archiver.REWRITE_OK).exists()
     monkeypatch.setattr(archiver, "_copy_in_place", real_copy)
-    restarted = make_app()  # startup recovery re-applies the verified journal
+    restarted = make_app()
+    async with restarted.router.lifespan_context(restarted):  # service start re-applies the journal
+        pass
     assert not (tmp_path / "data" / archiver.REWRITE_OK).exists()
     assert len(restarted.state.store.records) == 2 and restarted.state.store.corrupt_lines == 0
     audit = datastore.audit(tmp_path)

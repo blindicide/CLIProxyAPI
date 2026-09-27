@@ -41,8 +41,10 @@ async def test_gap_longer_than_retention_is_recorded(make_app, mgmt, sample, api
     assert app.state.queue_retention_s == 90.0
     assert app.state.store.state["loss_windows"] == []
 
-    # Pretend the last successful drain was 5 minutes ago (process was down).
+    # The process was down for 5 minutes: persisted last_ok_at is old, and a new process starts.
     app.state.store.state["last_ok_at"] = iso_utc(utc_now() - timedelta(minutes=5))
+    app.state.store.save_state()
+    app = make_app()
     await app.state.drain_once(app)
     windows = app.state.store.state["loss_windows"]
     assert len(windows) == 1
@@ -81,3 +83,18 @@ def test_loss_windows_are_capped(tmp_path):
     assert len(store.state["loss_windows"]) == MAX_LOSS_WINDOWS
     assert store.state["loss_windows_total"] == MAX_LOSS_WINDOWS + 7
     assert store.state["loss_windows"][-1]["from"] == iso_utc(T0 + timedelta(hours=MAX_LOSS_WINDOWS + 6))
+
+
+async def test_wall_clock_jump_within_a_process_is_not_an_outage(make_app, mgmt, sample, monkeypatch):
+    import app as app_module
+    import ingest
+
+    mgmt.queue_responses = [[sample[0]], []]
+    app = make_app()
+    await app.state.drain_once(app)
+    real = ingest.utc_now
+    for jump in (timedelta(hours=2), -timedelta(hours=3), timedelta(days=400)):
+        monkeypatch.setattr(app_module, "utc_now", lambda jump=jump: real() + jump)
+        monkeypatch.setattr(ingest, "utc_now", lambda jump=jump: real() + jump)
+        await app.state.drain_once(app)
+    assert app.state.store.state["loss_windows_total"] == 0

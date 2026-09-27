@@ -19,7 +19,10 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger("cproxy-ui.ingest")
 
 MAX_POPS_PER_CYCLE = 500
-POP_BATCH = 50
+# Records per usage-queue GET. cproxy's queue pops without ack, so a SIGKILL between a pop and
+# its fsync loses exactly that batch (proven by tools/chaos_drill.py kill_after_pop): keep it
+# small. 500 pops x 10 still drains 5,000 records per cycle.
+POP_BATCH = 10
 FAIL_BODY_LIMIT = 600
 # cproxy's default for redis-usage-queue-retention-seconds; the live value is read from /config.
 DEFAULT_QUEUE_RETENTION_SECONDS = 60.0
@@ -281,7 +284,9 @@ class RecordStore:
         self.records: list[dict[str, Any]] = []
         self.corrupt_lines = 0
         self.pending: list[dict[str, Any]] = []
-        self._dirty_tail = False
+        # Size to cut the file back to before the next write: set when a failed write could not
+        # be rolled back immediately (e.g. read-only filesystem).
+        self._truncate_to: int | None = None
         self.state: dict[str, Any] = {
             "total_ingested": 0,
             "duplicates_skipped": 0,
@@ -299,6 +304,7 @@ class RecordStore:
             "archive_last_success_at": None,
             "archive_last_error": None,
             "archive_last_result": None,
+            "reconcile_missing": 0,
         }
         self._load()
 
@@ -361,24 +367,31 @@ class RecordStore:
         if not batch:
             return 0
         lines = [json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n" for record in batch]
+        start: int | None = None
         try:
             self.requests_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._truncate_to is not None:
+                self._rollback(self._truncate_to)
+            start = self.requests_path.stat().st_size if self.requests_path.exists() else 0
             with self.requests_path.open("a", encoding="utf-8") as handle:
-                if self._dirty_tail:
-                    # A previous failed write may have left a partial line behind.
-                    handle.write("\n")
                 for line in lines:
                     handle.write(line)
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as exc:
+            # A write can fail part-way (ENOSPC after some lines): cut the file back to where this
+            # attempt started, so the retry of the whole batch never duplicates lines on disk.
+            if start is not None:
+                self._truncate_to = start
+                try:
+                    self._rollback(start)
+                except OSError:
+                    pass  # e.g. read-only: done before the next write instead
             self.pending = batch
-            self._dirty_tail = True
             self.state["last_write_error"] = f"{type(exc).__name__}: {exc.strerror or exc}"
             logger.error("could not persist %d usage record(s), keeping them in memory for retry: %s", len(batch), self.state["last_write_error"])
             return 0
         self.pending = []
-        self._dirty_tail = False
         self.state["last_write_error"] = None
         self.ids.update(record["id"] for record in batch)
         # Same representation a restart would load: parsed back from the written lines.
@@ -386,6 +399,17 @@ class RecordStore:
         self.state["total_ingested"] += len(batch)
         self.state["last_ingest_at"] = iso_utc(utc_now())
         return len(batch)
+
+    def _rollback(self, size: int) -> None:
+        """Truncate requests.jsonl to ``size`` (only this process appends to it)."""
+        if self.requests_path.stat().st_size > size:
+            fd = os.open(self.requests_path, os.O_WRONLY)
+            try:
+                os.ftruncate(fd, size)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        self._truncate_to = None
 
     def note_loss_window(self, window: dict[str, Any]) -> None:
         self.state["loss_windows"] = (list(self.state.get("loss_windows") or []) + [window])[-MAX_LOSS_WINDOWS:]

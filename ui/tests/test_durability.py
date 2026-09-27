@@ -101,7 +101,9 @@ def test_failed_write_keeps_records_pending_and_retries(tmp_path, sample, monkey
 
     reloaded = _store(tmp_path)
     assert [r["id"] for r in reloaded.records] == [first["id"], second["id"]]
-    assert reloaded.corrupt_lines == 1  # the torn half-line from the failed write, isolated
+    # The half-written line was rolled back, not left behind: no corrupt line, no duplicate.
+    assert reloaded.corrupt_lines == 0
+    assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 2
 
 
 async def test_health_degraded_while_writes_pending(make_app, api_client, sample):
@@ -123,3 +125,50 @@ def test_state_save_failure_is_not_fatal(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr("ingest.os.replace", boom)
     store.save_state()  # must not raise
     assert "could not save ingest state" in caplog.text
+
+
+def test_partial_batch_write_is_rolled_back_not_duplicated(tmp_path, sample, monkeypatch):
+    """ENOSPC after some complete lines: the retry must not write those lines twice."""
+    store = _store(tmp_path)
+    batch = [normalize_record(copy.deepcopy(sample[i % 2]) | {"execution_id": f"p-{i}"}, {}) for i in range(4)]
+    real_open = type(store.requests_path).open
+
+    class TwoLinesThenFull:
+        def __init__(self, real):
+            self.real, self.lines = real, 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.real.close()
+            return False
+
+        def write(self, text):
+            if self.lines == 2:
+                raise OSError(28, "No space left on device")
+            self.lines += 1
+            self.real.write(text)
+            self.real.flush()
+
+    monkeypatch.setattr(type(store.requests_path), "open", lambda self, *a, **k: TwoLinesThenFull(real_open(self, *a, **k)))
+    assert store.append(batch) == 0 and len(store.pending) == 4
+    with open(tmp_path / "requests.jsonl") as handle:  # builtin open: Path.open is patched here
+        assert handle.read() == ""  # the two complete lines were rolled back
+    monkeypatch.setattr(type(store.requests_path), "open", real_open)
+    assert store.append([]) == 4
+    ids = [json.loads(line)["id"] for line in (tmp_path / "requests.jsonl").read_text().splitlines()]
+    assert sorted(ids) == sorted(r["id"] for r in batch) and len(ids) == len(set(ids))
+
+
+def test_rollback_deferred_when_it_cannot_run_yet(tmp_path, sample, monkeypatch):
+    store = _store(tmp_path)
+    first = normalize_record(sample[0], {})
+    assert store.append([first]) == 1
+    size = (tmp_path / "requests.jsonl").stat().st_size
+    with open(tmp_path / "requests.jsonl", "a") as handle:
+        handle.write('{"id":"partial')  # what a failed write left behind
+    store._truncate_to = size  # rollback could not run (e.g. read-only at the time)
+    assert store.append([normalize_record(sample[1], {})]) == 1
+    lines = (tmp_path / "requests.jsonl").read_text().splitlines()
+    assert len(lines) == 2 and all(json.loads(line)["id"] for line in lines)
