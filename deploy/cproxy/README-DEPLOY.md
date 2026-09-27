@@ -179,6 +179,99 @@ curl -s -H "Authorization: Bearer $K" http://127.0.0.1:31524/v0/management/confi
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["redis-usage-queue-retention-seconds"])'
 ```
 
+### Operator decision: the dashboard is public
+
+**Current state (decided 2026-09-27): public, no authentication**, same as the
+agy-proxy dashboard this mirrors. The mandated acceptance checks
+(`curl https://cproxy.net.a.blindicide.ru/api/health`, `/api/analytics?window=24h`)
+are unauthenticated as well.
+
+What anyone on the internet can read at `/` and `/api/*`:
+
+- request metadata: time, model, endpoint, status, tokens, list-price cost,
+  latency, **client IPs**, **user agents**, request/session/execution ids;
+- the first 600 characters of **upstream error bodies**;
+- the credential **account label/email**, 5h/7d quota utilisation and resets;
+- the full request history via `/api/requests` and `/api/export.csv`.
+
+Never exposed: API keys (client and upstream keys are masked as
+`sha256:<12 hex>…<last 4>` at ingest and in every response; covered by tests),
+the management key, credentials, `config.yaml`.
+
+If that tradeoff changes, apply **one** of the options below to the main vhost
+(and the same block to `cproxy-ui.net.a.blindicide.ru.conf` if that host should
+match). Both protect only `location /` (dashboard + `/api/*`); the relay API
+(`^/(v1|v0|health)`) is a separate location and keeps working unchanged. After
+either change the unauthenticated acceptance curls above return 401/403 by
+design; use `curl -u <user>` (option A) or run them from an allowed IP (B).
+
+**1. Back up** (mandatory, never edit without it):
+
+```bash
+C=/etc/nginx/conf.d/cproxy.net.a.blindicide.ru.conf
+B=$C.bak-$(date +%Y%m%d-%H%M%S); sudo cp "$C" "$B"; echo "backup: $B"
+```
+
+**2a. Option A — HTTP basic auth.** Create the password file (outside the repo,
+readable by nginx only):
+
+```bash
+sudo htpasswd -c /etc/nginx/cproxy-ui.htpasswd <user>     # prompts for the password
+sudo chown root:www-data /etc/nginx/cproxy-ui.htpasswd && sudo chmod 640 /etc/nginx/cproxy-ui.htpasswd
+```
+
+Then add two lines at the top of the `location / {` block that proxies to
+`127.0.0.1:24688` (`sudoedit "$C"`):
+
+```nginx
+    location / {
+        auth_basic           "cproxy analytics";
+        auth_basic_user_file /etc/nginx/cproxy-ui.htpasswd;
+        proxy_pass http://127.0.0.1:24688;
+        ...
+```
+
+**2b. Option B — IP allowlist.** Instead of 2a, add at the top of the same
+`location / {` block (one `allow` per address or CIDR):
+
+```nginx
+    location / {
+        allow 203.0.113.10;        # replace with your address(es)
+        deny  all;
+        proxy_pass http://127.0.0.1:24688;
+        ...
+```
+
+**3. Test and reload:**
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**4. Re-verify all of it** — the dashboard is protected and the API is not
+broken:
+
+```bash
+H=https://cproxy.net.a.blindicide.ru
+K=$(grep '^CPROXY_API_KEY=' deploy/cproxy.env | cut -d= -f2-)
+curl -s -o /dev/null -w "/ unauthenticated: %{http_code} (expect 401 or 403)\n" $H/
+curl -s -o /dev/null -w "/api/health unauthenticated: %{http_code} (expect 401 or 403)\n" $H/api/health
+curl -s -u <user> $H/api/health | head -c 120; echo "   <- option A: expect status ok"
+curl -s -H "Authorization: Bearer $K" $H/v1/models | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["data"]), "models (expect 17)")'
+curl -s -H "Authorization: Bearer $K" -H 'Content-Type: application/json' $H/v1/chat/completions \
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":10,"messages":[{"role":"user","content":"Say ok"}]}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["choices"][0]["message"]["content"])'
+curl -s -o /dev/null -w "/healthz: %{http_code} (expect 200)\n" $H/healthz
+```
+
+**5. If any API check fails, roll back immediately:**
+
+```bash
+sudo cp "$B" "$C" && sudo nginx -t && sudo systemctl reload nginx
+```
+
+and repeat the `/v1/models` and completion checks. Never leave the API broken.
+
 ### Pricing
 
 `ui/pricing.py` — official Anthropic list prices

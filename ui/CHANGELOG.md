@@ -3,22 +3,7 @@
 Versions are shown in the dashboard header/footer, `/api/health` and
 `/api/analytics` (`ui/version.py`).
 
-## Unreleased
-
-- Hourly buckets carry the UTC offset and are ordered by real time, so the
-  repeated hour on a DST fall-back day is not merged (`ab02be3`).
-- Quota windows whose reset time has passed since the last observed upstream
-  response are flagged (`reset_passed`) and shown as "unknown" instead of
-  presenting the old utilisation as current.
-- Runtime and test dependencies split; tests move to pytest >= 9.0.3
-  (PYSEC-2026-1845, predictable `/tmp/pytest-of-<user>`); `requirements.lock`
-  pins the exact tested set, which pip-audit reports clean.
-- Responses over 1 KB are gzip-compressed by the app (nginx does not compress
-  here): a 30 s dashboard poll drops from ~64 KB to ~7.7 KB.
-- Upstream API-key usage rows skip malformed entries; tests for the live
-  quota shape, key masking, backlog draining and schema drift (coverage 98%).
-
-## 0.2.0 — 2026-09-27
+## 0.2.0 — 2026-09-27 (tag `cproxy-ui-v0.2`)
 
 Data safety
 - A crash mid-write can no longer glue the next record onto a torn line and
@@ -55,8 +40,24 @@ Accessibility
 - WCAG AA text contrast in both themes, scoped and captioned tables, charts
   that announce their data, visible keyboard focus (`80cd5ef`).
 
+Correctness and hardening (after the version bump, before tagging)
+- Hourly buckets carry the UTC offset and are ordered by real time, so the
+  repeated hour on a DST fall-back day is not merged (`ab02be3`).
+- Quota windows whose reset time has passed since the last observed upstream
+  response are flagged (`reset_passed`) and shown as "unknown" instead of
+  presenting the old utilisation as current.
+- Runtime and test dependencies split; tests move to pytest >= 9.0.3
+  (PYSEC-2026-1845, predictable `/tmp/pytest-of-<user>`); `requirements.lock`
+  pins the exact tested set, which pip-audit reports clean.
+- Responses over 1 KB are gzip-compressed by the app (nginx does not compress
+  here): a 30 s dashboard poll drops from ~64 KB to ~7.7 KB.
+- Upstream API-key usage rows skip malformed entries; tests for the live
+  quota shape, key masking, backlog draining and schema drift (coverage 98%).
+- Dashboard JavaScript unit tests, mutation-checked (`3df96f2`).
+
 Docs
-- Developer README (`9d88151`); operator note on queue retention (`5873278`).
+- Developer README (`9d88151`); operator note on queue retention (`5873278`);
+  public-exposure operator decision with tested basic-auth / allowlist snippets.
 
 ## 0.1.0 — 2026-09-27 (tag `cproxy-ui-v0.1`)
 
