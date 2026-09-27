@@ -13,6 +13,9 @@ Versions are shown in the dashboard header/footer, `/api/health` and
   dashboard warn when the lock was held longer than a third of the queue
   retention (measured at 20k records: 3.3 s prepare, 0.41 s locked). Archive
   failures now also raise a dashboard banner.
+- Test hang guard (`tests/timeout_guard.py`): a test stuck past 60 s fails
+  with a `TimeoutError` traceback and the run continues; faulthandler hard-exits
+  as a last resort. Suite checked stable over 8 runs and per file in isolation.
 
 ## 0.3.0 — 2026-09-27 (tag `cproxy-ui-v0.3`)
 

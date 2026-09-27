@@ -206,7 +206,9 @@ measured numbers above 20k.
 
 ### Gates before every change ships
 
-1. `venv/bin/pytest -q` green.
+1. `venv/bin/pytest -q` green (8 consecutive runs and every file in isolation
+   pass; a test stuck longer than `CPROXY_UI_TEST_TIMEOUT` (60 s) fails with a
+   `TimeoutError` traceback via `tests/timeout_guard.py` instead of hanging).
 2. `sudo systemctl restart cproxy-ui` (never the `cproxy` unit), then
    `/api/health` reports `status: ok` with `pending_writes: 0`.
 3. The dashboard renders with no console errors (CSP violations show up there).

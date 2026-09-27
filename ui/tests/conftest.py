@@ -9,6 +9,9 @@ from typing import Any, Callable
 import httpx
 import pytest
 
+# Hung tests fail the run with stack traces instead of blocking it (tests/timeout_guard.py).
+pytest_plugins = ["timeout_guard"]
+
 FIXTURES = Path(__file__).parent / "fixtures"
 # The raw capture (local only, gitignored) carries the live client key; the committed copy is
 # byte-identical except for a synthetic key of the same length.
