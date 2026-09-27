@@ -115,7 +115,7 @@ test("charts announce a data summary", () => {
 // used before its declaration) that only show when refresh() runs end to end.
 async function refreshScenario(ingestExtra, expectBanner) {
   const analytics = {
-    window: "24h", version: "0.2.0", generated_at: "2026-09-27T13:00:00Z", window_start: "2026-09-26T13:00:00Z",
+    window: "24h", version: "0.3.0", generated_at: "2026-09-27T13:00:00Z", window_start: "2026-09-26T13:00:00Z",
     series_granularity: "hour", series: [{bucket: "2026-09-27T15:00+02:00", requests: 2, failed: 1, input_tokens: 10, output_tokens: 5, cost_usd: 0.001}],
     summary: {requests: 2, success: 1, failed: 1, success_pct: 50, failed_pct: 50, input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0,
       estimated_cost_usd: 0.001, unpriced_requests: 0, unpriced_models: {}, avg_latency_ms: 10, p50_latency_ms: 10, p95_latency_ms: 10, avg_ttft_ms: 5, ttft_samples: 1,

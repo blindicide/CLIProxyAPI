@@ -3,34 +3,45 @@
 Versions are shown in the dashboard header/footer, `/api/health` and
 `/api/analytics` (`ui/version.py`).
 
-## Unreleased
+## 0.3.0 — 2026-09-27 (tag `cproxy-ui-v0.3`)
 
-- `tools/verify_totals.py`: independent recomputation of the analytics from
-  `requests.jsonl` (`ad577bb`).
-- `tools/datastore.py` backup / verify / merge-restore / archive / status, a
-  sandboxed daily backup timer (keeps 30), and storage + backup freshness in
-  `/api/health` with dashboard warnings. History is still never truncated
-  automatically.
-- The store and the oracle stream `requests.jsonl` instead of reading it
-  whole: load-time peak 9.9 → 3.3 KB/record (store), 13.8 → 1.3 KB/record
-  (oracle). Memory-guarded `tools/scale_test.py` (20k records max on this host).
-- `tools/datastore.py` streams every operation (backup memory no longer grows
-  with the history; snapshots stay consistent while the file is appended to).
-- cgroup memory caps: cproxy-ui `MemoryHigh=600M`/`MemoryMax=900M`, backup unit
-  `MemoryMax=256M`; `/api/health` reports RSS against the limit and the dashboard
-  warns at 70%.
+History: never lost, archived not deleted
+- Backup / verify / merge-restore / archive / status (`tools/datastore.py`), a
+  sandboxed daily backup timer keeping 30, and storage + backup freshness in
+  `/api/health` with dashboard warnings (`216b4ed`).
 - Automatic archiving: records older than 180 days move daily into
-  `data/archive/*.jsonl.gz` only after a fresh verified backup and a
+  `data/archive/*.jsonl.gz`, only after a fresh verified backup and a
   read-back-verified archive exist; journaled in-place rewrite with crash
-  recovery; any failed check keeps everything and warns. `datastore.py audit`
-  proves live ∪ archives == total ingested.
-- `window=all` spans the archives: archived records go through the same
-  aggregation as live ones (summary, percentiles, per-day series, every
-  table), each row carries `archived_requests`, a `coverage` block says what
-  the figures span, and the dashboard labels archive rows and the boundary.
-  24h/7d/30d stay live-only (archive threshold floor 31 days). CSV export of
-  `all` streams archived rows first. `verify_totals.py` checks every window
-  over live + archives.
+  recovery under the service's write lock and a shared history lock; any
+  failed check keeps everything and warns. `datastore.py audit` proves
+  live ∪ archives == total ingested (`ce1cf49`).
+- `window=all` spans the archives through the same aggregation as live
+  records (summary, percentiles, per-day series, every table); rows carry
+  `archived_requests`, responses a `coverage` block, and the dashboard labels
+  archive rows and the boundary. 24h/7d/30d stay live-only (threshold floor
+  31 days); the CSV export of `all` includes archived rows (`b94214c`,
+  superseding the unreleased lifetime block of `635e043`).
+
+Memory (after a 200k-record scale test OOM-killed other processes on the
+shared host, 2026-09-27)
+- The store and the oracle stream `requests.jsonl`: load-time peak 9.9 → 3.3
+  KB/record (store), 13.8 → 1.3 KB/record (oracle) (`d3d0deb`).
+- Every datastore operation streams; cgroup caps cproxy-ui
+  `MemoryHigh=600M`/`MemoryMax=900M` and backup `MemoryMax=256M`; `/api/health`
+  reports RSS against the limit and warns at 70% (`e53cfca`).
+- Memory-guarded `tools/scale_test.py`: 20k records max on this host,
+  preflight refusal and an RSS watchdog; larger runs are off-host only
+  (`03897a2`). Measured at 20k: service peak 140 MiB, p95 626 ms with 10
+  viewers polling back to back.
+
+Verification
+- `tools/verify_totals.py`: stdlib-only oracle with its own price table;
+  recomputes every window from `requests.jsonl` + archives and compares with
+  `/api/analytics` (`ad577bb`, extended in `b94214c`).
+
+Docs
+- Public-dashboard exposure recorded as an operator decision, with tested
+  basic-auth / IP-allowlist snippets (`70bea40`, tagged as 0.2.0).
 
 ## 0.2.0 — 2026-09-27 (tag `cproxy-ui-v0.2`)
 
