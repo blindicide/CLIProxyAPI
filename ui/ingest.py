@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -20,6 +20,9 @@ logger = logging.getLogger("cproxy-ui.ingest")
 MAX_POPS_PER_CYCLE = 500
 POP_BATCH = 50
 FAIL_BODY_LIMIT = 600
+# cproxy's default for redis-usage-queue-retention-seconds; the live value is read from /config.
+DEFAULT_QUEUE_RETENTION_SECONDS = 60.0
+MAX_LOSS_WINDOWS = 50
 
 # Only the rate-limit signals and upstream request id are kept from response headers.
 _HEADER_PREFIX = "anthropic-ratelimit-"
@@ -129,6 +132,37 @@ def ratelimit_from_signals(signals: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def loss_window(last_ok: datetime | None, now: datetime, retention_s: float) -> dict[str, Any] | None:
+    """The span whose usage records were pruned unread, if the drainer was away too long.
+
+    cproxy drops queue items older than ``retention_s``. With successful drains at ``last_ok``
+    and ``now``, anything enqueued in (last_ok, now - retention_s) expired before this drain.
+    """
+    if last_ok is None:
+        return None
+    end = now - timedelta(seconds=retention_s)
+    if end <= last_ok:
+        return None
+    return {
+        "from": iso_utc(last_ok),
+        "to": iso_utc(end),
+        "unobserved_s": round((end - last_ok).total_seconds(), 1),
+        "retention_s": retention_s,
+        "detected_at": iso_utc(now),
+    }
+
+
+def retention_from_config(payload: Any) -> float | None:
+    """Only this one field is read from ``GET /v0/management/config``; the rest is discarded."""
+    value = payload.get("redis-usage-queue-retention-seconds") if isinstance(payload, dict) else None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    # cproxy treats <= 0 as its default and clamps to 3600.
+    return min(seconds, 3600.0) if seconds > 0 else DEFAULT_QUEUE_RETENTION_SECONDS
+
+
 def record_id(record: dict[str, Any]) -> str:
     execution_id = str(record.get("execution_id") or "")
     request_id = str(record.get("request_id") or "")
@@ -226,6 +260,8 @@ class RecordStore:
             "last_error_at": None,
             "last_ok_at": None,
             "last_write_error": None,
+            "loss_windows": [],
+            "loss_windows_total": 0,
         }
         self._load()
 
@@ -306,6 +342,14 @@ class RecordStore:
         self.state["total_ingested"] += len(batch)
         self.state["last_ingest_at"] = iso_utc(utc_now())
         return len(batch)
+
+    def note_loss_window(self, window: dict[str, Any]) -> None:
+        self.state["loss_windows"] = (list(self.state.get("loss_windows") or []) + [window])[-MAX_LOSS_WINDOWS:]
+        self.state["loss_windows_total"] = int(self.state.get("loss_windows_total") or 0) + 1
+        logger.warning(
+            "usage records enqueued between %s and %s were pruned unread (%.0f s unobserved, queue retention %.0f s)",
+            window["from"], window["to"], window["unobserved_s"], window["retention_s"],
+        )
 
     def save_state(self) -> None:
         payload = {**self.state, "records_in_file": len(self.records)}

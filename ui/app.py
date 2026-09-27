@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from analytics import WINDOWS, DerivedCache, aggregate, local_iso, recent
-from ingest import RecordStore, drain_queue, iso_utc, key_names_from_config, mask_key, parse_ts, ratelimit_from_signals, utc_now
+from ingest import DEFAULT_QUEUE_RETENTION_SECONDS, RecordStore, drain_queue, iso_utc, key_names_from_config, loss_window, mask_key, parse_ts, ratelimit_from_signals, retention_from_config, utc_now
 from pricing import AS_OF, BASIS, PRICING, SOURCE_URL, pricing_payload, resolve_model
 from version import BUILD_DATE, SERVICE, VERSION
 
@@ -212,6 +212,8 @@ def create_app(
     app.state.store = RecordStore(data_dir / "requests.jsonl", data_dir / "data" / "ingest_state.json")
     app.state.key_names = {}
     app.state.key_names_at = 0.0
+    app.state.queue_retention_s = DEFAULT_QUEUE_RETENTION_SECONDS
+    app.state.queue_retention_source = "default"
     app.state.started_at = time.monotonic()
     app.state.last_drain = None
     app.state.drain_lock = asyncio.Lock()
@@ -222,20 +224,34 @@ def create_app(
         if force or time.monotonic() - app.state.key_names_at > KEY_NAMES_TTL_SECONDS:
             app.state.key_names = key_names_from_config(await app.state.management.get("api-keys"))
             app.state.key_names_at = time.monotonic()
+            try:
+                retention = retention_from_config(await app.state.management.get("config"))
+            except ManagementError as exc:
+                retention = None
+                logger.warning("could not read queue retention from cproxy config, keeping %.0f s: %s", app.state.queue_retention_s, exc)
+            if retention is not None:
+                app.state.queue_retention_s = retention
+                app.state.queue_retention_source = "cproxy config"
 
     async def drain_once(app: FastAPI) -> dict[str, Any]:
         store: RecordStore = app.state.store
         async with app.state.drain_lock:
             try:
                 await refresh_key_names(app)
+                started = utc_now()
                 result = await drain_queue(app.state.management.get, store, app.state.key_names)
             except ManagementError as exc:
                 store.state["last_error"] = str(exc)
                 store.state["last_error_at"] = iso_utc(utc_now())
                 store.save_state()
                 raise
+            window = loss_window(parse_ts(store.state.get("last_ok_at")), started, app.state.queue_retention_s)
+            if window:
+                store.note_loss_window(window)
             store.state["last_ok_at"] = store.state["last_drain_at"]
             store.state["last_error"] = None
+            if window:
+                store.save_state()
             app.state.last_drain = result
             if result["stored"]:
                 logger.info("ingested %d usage record(s) in %d pop(s)", result["stored"], result["pops"])
@@ -281,6 +297,10 @@ def create_app(
             "last_ingest_at": state.get("last_ingest_at"),
             "last_ingest_age_s": _age_seconds(state.get("last_ingest_at"), now),
             "poll_interval_s": poll_interval,
+            "queue_retention_s": app.state.queue_retention_s,
+            "queue_retention_source": app.state.queue_retention_source,
+            "loss_windows_total": state.get("loss_windows_total") or 0,
+            "loss_windows": (state.get("loss_windows") or [])[-5:],
         }
 
     dashboard_html = (ROOT / "dashboard.html").read_text(encoding="utf-8").replace("__CPROXY_UI_VERSION__", VERSION).replace("__CPROXY_UI_BUILD__", BUILD_DATE)

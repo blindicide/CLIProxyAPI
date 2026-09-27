@@ -80,6 +80,8 @@ class MockManagement:
         self.calls: list[str] = []
         self.down = False
         self.auth_files = auth_files_payload()
+        # None -> /config answers 404 (exercises the default-retention fallback).
+        self.config: dict[str, Any] | None = None
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path.removeprefix("/v0/management/")
@@ -92,6 +94,8 @@ class MockManagement:
             return httpx.Response(200, json=self.queue_responses.pop(0) if self.queue_responses else [])
         if path == "api-keys":
             return httpx.Response(200, json={"api-keys": [OTHER_CLIENT_KEY, self.client_key]})
+        if path == "config" and self.config is not None:
+            return httpx.Response(200, json=self.config)
         if path == "auth-files":
             return httpx.Response(200, json=self.auth_files)
         if path == "api-key-usage":
