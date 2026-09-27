@@ -1,0 +1,18 @@
+[Unit]
+Description=cproxy-ui (analytics dashboard for the cproxy Claude Code relay)
+After=network.target cproxy.service
+Wants=cproxy.service
+
+[Service]
+Type=simple
+User=clawuser
+WorkingDirectory=/home/clawuser/projects/cproxy/ui
+EnvironmentFile=/home/clawuser/projects/cproxy/deploy/cproxy-ui.env
+ExecStart=/home/clawuser/projects/cproxy/ui/venv/bin/uvicorn app:app --host 127.0.0.1 --port 24688 --no-access-log
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
