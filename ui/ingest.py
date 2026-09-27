@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -23,6 +24,37 @@ FAIL_BODY_LIMIT = 600
 # cproxy's default for redis-usage-queue-retention-seconds; the live value is read from /config.
 DEFAULT_QUEUE_RETENTION_SECONDS = 60.0
 MAX_LOSS_WINDOWS = 50
+
+# In-memory records are parsed from the exact JSON line written to disk, minus fields nothing
+# reads back (analytics and /api/requests ignore ``ratelimit``; it stays on disk). Keys and
+# values that repeat across records are interned: json.loads would otherwise allocate fresh
+# copies for every line (measured ~8.2 KB -> ~2 KB per record).
+IN_MEMORY_DROP = frozenset({"ratelimit"})
+_REPEATED_VALUES = frozenset(
+    {
+        "model", "alias", "response_model", "provider", "executor_type", "endpoint", "endpoint_path",
+        "source", "auth_index", "auth_type", "access_token_sha256", "client_ip", "resolved_client_ip",
+        "x_forwarded_for", "user_agent", "api_key_masked", "api_key_name", "reasoning_effort",
+        "service_tier", "quality", "fail_body",
+    }
+)
+
+
+def _compact_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in IN_MEMORY_DROP:
+            continue
+        key = sys.intern(key)
+        if key in _REPEATED_VALUES and isinstance(value, str):
+            value = sys.intern(value)
+        out[key] = value
+    return out
+
+
+def load_compact(line: str) -> Any:
+    return json.loads(line, object_pairs_hook=_compact_pairs)
+
 
 # Only the rate-limit signals and upstream request id are kept from response headers.
 _HEADER_PREFIX = "anthropic-ratelimit-"
@@ -280,7 +312,7 @@ class RecordStore:
             if not line.strip():
                 continue
             try:
-                record = json.loads(line)
+                record = load_compact(line)
             except json.JSONDecodeError:
                 record = None
             if not isinstance(record, dict) or not record.get("id"):
@@ -318,14 +350,15 @@ class RecordStore:
         batch = self.pending + fresh
         if not batch:
             return 0
+        lines = [json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n" for record in batch]
         try:
             self.requests_path.parent.mkdir(parents=True, exist_ok=True)
             with self.requests_path.open("a", encoding="utf-8") as handle:
                 if self._dirty_tail:
                     # A previous failed write may have left a partial line behind.
                     handle.write("\n")
-                for record in batch:
-                    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+                for line in lines:
+                    handle.write(line)
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as exc:
@@ -338,7 +371,8 @@ class RecordStore:
         self._dirty_tail = False
         self.state["last_write_error"] = None
         self.ids.update(record["id"] for record in batch)
-        self.records.extend(batch)
+        # Same representation a restart would load: parsed back from the written lines.
+        self.records.extend(load_compact(line) for line in lines)
         self.state["total_ingested"] += len(batch)
         self.state["last_ingest_at"] = iso_utc(utc_now())
         return len(batch)

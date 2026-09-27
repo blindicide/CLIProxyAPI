@@ -27,15 +27,23 @@ def local_iso(dt: datetime | None) -> str | None:
 class Derived:
     """Per-record fields the aggregation needs, computed once (timestamps, cost, group keys)."""
 
-    __slots__ = ("ts", "day", "hour", "cost", "usage", "model", "key_name", "key_masked", "endpoint", "ip", "ua", "failed", "stream", "latency", "ttft", "status")
+    __slots__ = ("ts", "day", "hour", "cost_usd", "cost_quality", "input_total", "output", "cache_read", "cache_write", "reasoning", "model", "key_name", "key_masked", "endpoint", "ip", "ua", "failed", "stream", "latency", "ttft", "status")
 
     def __init__(self, record: dict[str, Any]) -> None:
         self.ts = parse_ts(record.get("timestamp"))
         local = self.ts.astimezone(LOCAL_TZ) if self.ts else None
         self.day = local.strftime("%Y-%m-%d") if local else None
         self.hour = local.strftime("%Y-%m-%dT%H:00") if local else None
-        self.cost = record_cost(record)
-        self.usage = self.cost["usage"]
+        # Flattened (not the cost/usage dicts) to keep the per-record cache small.
+        cost = record_cost(record)
+        usage = cost["usage"]
+        self.cost_usd = cost["cost_usd"]
+        self.cost_quality = cost["cost_quality"]
+        self.input_total = usage["input_total"]
+        self.output = usage["output"]
+        self.cache_read = usage["cache_read"]
+        self.cache_write = usage["cache_write"]
+        self.reasoning = usage["reasoning"]
         self.model = str(record.get("model") or "unknown")
         self.key_name = str(record.get("api_key_name") or "no-key")
         self.key_masked = record.get("api_key_masked")
@@ -135,18 +143,17 @@ def _new_group(key: str) -> dict[str, Any]:
 
 
 def _add(group: dict[str, Any], d: Derived) -> None:
-    usage = d.usage
     group["requests"] += 1
     if d.failed:
         group["failed"] += 1
     else:
         group["success"] += 1
-    group["input_tokens"] += usage["input_total"]
-    group["output_tokens"] += usage["output"]
-    group["cache_read_tokens"] += usage["cache_read"]
-    group["cache_write_tokens"] += usage["cache_write"]
-    group["reasoning_tokens"] += usage["reasoning"]
-    cost = d.cost["cost_usd"]
+    group["input_tokens"] += d.input_total
+    group["output_tokens"] += d.output
+    group["cache_read_tokens"] += d.cache_read
+    group["cache_write_tokens"] += d.cache_write
+    group["reasoning_tokens"] += d.reasoning
+    cost = d.cost_usd
     if cost is None:
         group["unpriced_requests"] += 1
     else:
@@ -239,9 +246,9 @@ def aggregate(records: list[dict[str, Any]], window: str = "24h", now: datetime 
             stream += 1
         else:
             non_stream += 1
-        quality = d.cost["cost_quality"]
+        quality = d.cost_quality
         cost_quality[quality] = cost_quality.get(quality, 0) + 1
-        if d.cost["cost_usd"] is None:
+        if d.cost_usd is None:
             unpriced_models[model] = unpriced_models.get(model, 0) + 1
         status_codes[d.status] = status_codes.get(d.status, 0) + 1
 
