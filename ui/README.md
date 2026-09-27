@@ -18,6 +18,7 @@ server-side and returned by `/api/health` and `/api/analytics`.
 | `pricing.py` | Anthropic list-price table, model id resolution, per-record cost |
 | `analytics.py` | window filtering and aggregation (`aggregate`, `recent`), `DerivedCache` |
 | `export.py` | CSV export rows (`/api/export.csv`) with formula-injection guard |
+| `tools/verify_totals.py` | independent recomputation of totals from `requests.jsonl` vs `/api/analytics` |
 | `dashboard.html` | the whole UI: inline CSS + vanilla JS + inline SVG charts, no external assets |
 | `tests/` | pytest suite; `fixtures/usage_queue_sample.redacted.json` holds real captured queue records |
 
@@ -146,6 +147,22 @@ from pytest and skips when `node` is not installed.
 Tests use `httpx.MockTransport` for the management API and `httpx.ASGITransport`
 for the app; no network, no sleeps (time-dependent behaviour takes an injectable
 `clock` or explicit timestamps).
+
+### Independent verification of the numbers
+
+`tools/verify_totals.py` (stdlib only, imports nothing from the app) carries its
+own copy of the official price table, recomputes every window's totals straight
+from `requests.jsonl` and compares them with the live `/api/analytics`
+(counts, token buckets, cost to 1e-8, per-model requests and cost, per-day cost
+sum). Exit 0 = everything matches, 1 = mismatch (listed), 2 = error.
+
+```bash
+venv/bin/python tools/verify_totals.py          # add --json for a machine-readable report
+```
+
+`tests/test_independent_totals.py` runs the same oracle against a rich dataset
+in every window, proves a tampered file is caught, and asserts the two price
+tables agree.
 
 ### Fixture and secret policy
 

@@ -290,6 +290,7 @@ venv/bin/pytest -q                       # tests (uses tests/fixtures/*.redacted
 sudo systemctl status|restart cproxy-ui
 journalctl -u cproxy-ui -f
 curl -s http://127.0.0.1:24688/api/health | python3 -m json.tool
+cd ui && venv/bin/python tools/verify_totals.py   # dashboard totals == independent recomputation (exit 0)
 ```
 
 `/api/health` returns `status: degraded` with `management.last_error` when the
