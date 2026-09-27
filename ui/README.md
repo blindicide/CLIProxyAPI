@@ -19,6 +19,7 @@ server-side and returned by `/api/health` and `/api/analytics`.
 | `analytics.py` | window filtering and aggregation (`aggregate`, `recent`), `DerivedCache` |
 | `export.py` | CSV export rows (`/api/export.csv`) with formula-injection guard |
 | `tools/datastore.py` | backup / verify / merge-restore / archive / status for `requests.jsonl` |
+| `tools/scale_test.py` | scale test on a throwaway instance with a mock management API; memory-guarded (default 2k, max 20k records on this host, `--off-host` for larger runs on a dedicated machine) |
 | `tools/verify_totals.py` | independent recomputation of totals from `requests.jsonl` vs `/api/analytics` |
 | `dashboard.html` | the whole UI: inline CSS + vanilla JS + inline SVG charts, no external assets |
 | `tests/` | pytest suite; `fixtures/usage_queue_sample.redacted.json` holds real captured queue records |
