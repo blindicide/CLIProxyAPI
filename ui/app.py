@@ -212,6 +212,7 @@ def create_app(
     app.state.store = RecordStore(data_dir / "requests.jsonl", data_dir / "data" / "ingest_state.json")
     app.state.key_names = {}
     app.state.key_names_at = 0.0
+    app.state.key_names_error = None
     app.state.queue_retention_s = DEFAULT_QUEUE_RETENTION_SECONDS
     app.state.queue_retention_source = "default"
     app.state.started_at = time.monotonic()
@@ -222,8 +223,15 @@ def create_app(
 
     async def refresh_key_names(app: FastAPI, force: bool = False) -> None:
         if force or time.monotonic() - app.state.key_names_at > KEY_NAMES_TTL_SECONDS:
-            app.state.key_names = key_names_from_config(await app.state.management.get("api-keys"))
             app.state.key_names_at = time.monotonic()
+            try:
+                app.state.key_names = key_names_from_config(await app.state.management.get("api-keys"))
+                app.state.key_names_error = None
+            except ManagementError as exc:
+                # Never let key naming block the drain: unread records are pruned after the retention.
+                # Previous names are kept; unknown keys are stored as "unknown-key" (still masked).
+                app.state.key_names_error = str(exc)
+                logger.warning("could not refresh client key names, draining anyway: %s", exc)
             try:
                 retention = retention_from_config(await app.state.management.get("config"))
             except ManagementError as exc:
@@ -281,6 +289,7 @@ def create_app(
             "last_ok_age_s": ok_age,
             "last_error": state.get("last_error"),
             "last_error_at": state.get("last_error_at"),
+            "key_names_error": app.state.key_names_error,
         }
 
     def ingest_status(now: datetime) -> dict[str, Any]:
