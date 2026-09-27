@@ -24,6 +24,11 @@ def local_iso(dt: datetime | None) -> str | None:
     return dt.astimezone(LOCAL_TZ).isoformat() if dt else None
 
 
+def _offset(dt: datetime) -> str:
+    text = dt.strftime("%z")  # e.g. +0200
+    return f"{text[:3]}:{text[3:]}"
+
+
 class Derived:
     """Per-record fields the aggregation needs, computed once (timestamps, cost, group keys)."""
 
@@ -33,7 +38,8 @@ class Derived:
         self.ts = parse_ts(record.get("timestamp"))
         local = self.ts.astimezone(LOCAL_TZ) if self.ts else None
         self.day = local.strftime("%Y-%m-%d") if local else None
-        self.hour = local.strftime("%Y-%m-%dT%H:00") if local else None
+        # The UTC offset keeps the repeated hour on a DST fall-back day as two buckets.
+        self.hour = local.strftime("%Y-%m-%dT%H:00") + _offset(local) if local else None
         # Flattened (not the cost/usage dicts) to keep the per-record cache small.
         cost = record_cost(record)
         usage = cost["usage"]
@@ -305,5 +311,6 @@ def aggregate(records: list[dict[str, Any]], window: str = "24h", now: datetime 
         "per_user_agent": _finish(per_ua, requests, "user_agent"),
         "per_day": sorted(_finish(per_day, requests, "day"), key=lambda row: row["day"]),
         "series_granularity": "hour" if hourly else "day",
-        "series": sorted(_finish(series, requests, "bucket"), key=lambda row: row["bucket"]),
+        # Chronological, not lexical: on a DST fall-back day "02:00+02:00" precedes "02:00+01:00".
+        "series": sorted(_finish(series, requests, "bucket"), key=lambda row: datetime.fromisoformat(row["bucket"]) if hourly else row["bucket"]),
     }

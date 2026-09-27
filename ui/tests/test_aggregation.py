@@ -86,7 +86,7 @@ def test_per_day_and_series(records):
     assert result["series_granularity"] == "day"
     hourly = aggregate(records, "24h", NOW)
     assert hourly["series_granularity"] == "hour"
-    assert [row["bucket"] for row in hourly["series"]] == ["2026-09-27T12:00", "2026-09-27T13:00", "2026-09-27T14:00"]
+    assert [row["bucket"] for row in hourly["series"]] == ["2026-09-27T12:00+02:00", "2026-09-27T13:00+02:00", "2026-09-27T14:00+02:00"]
     day_cost = sum(row["cost_usd"] or 0 for row in result["per_day"])
     assert day_cost == pytest.approx(result["summary"]["estimated_cost_usd"])
 
@@ -114,3 +114,19 @@ def test_helpers():
     assert short_user_agent("OpenAI/Python 1.2.3") == "OpenAI/Python"
     assert short_user_agent("Mozilla/5.0 (X11; Linux)") == "Mozilla/5.0"
     assert short_user_agent(None) == "(none)"
+
+
+def test_dst_fall_back_hour_is_not_merged(sample):
+    # 2026-10-25: clocks go back 03:00 CEST -> 02:00 CET, so 02:30 happens twice.
+    raws = []
+    for i, ts in enumerate(("2026-10-25T00:30:00+00:00", "2026-10-25T01:30:00+00:00")):
+        raw = copy.deepcopy(sample[0])
+        raw["execution_id"] = f"dst-{i}"
+        raw["timestamp"] = ts
+        raws.append(normalize_record(raw, {}))
+    result = aggregate(raws, "24h", datetime(2026, 10, 25, 3, 0, tzinfo=UTC))
+    assert [(row["bucket"], row["requests"]) for row in result["series"]] == [
+        ("2026-10-25T02:00+02:00", 1),  # 00:30Z, first
+        ("2026-10-25T02:00+01:00", 1),  # 01:30Z, one hour later
+    ]
+    assert [(row["day"], row["requests"]) for row in result["per_day"]] == [("2026-10-25", 2)]

@@ -254,8 +254,10 @@ function buckets(a){
   const map=new Map(a.series.map(r=>[r.bucket,r]));
   const out=[];
   const pad=(x)=>String(x).padStart(2,"0");
-  const partsOf=(d)=>Object.fromEntries(new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Amsterdam",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hour12:false}).formatToParts(d).map(p=>[p.type,p.value]));
-  const keyOf=(d,hour)=>{const p=partsOf(d);const h=p.hour==="24"?"00":p.hour;return hour?`${p.year}-${p.month}-${p.day}T${h}:00`:`${p.year}-${p.month}-${p.day}`;};
+  const partsOf=(d)=>Object.fromEntries(new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Amsterdam",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hour12:false,timeZoneName:"longOffset"}).formatToParts(d).map(p=>[p.type,p.value]));
+  // Hour keys carry the UTC offset (as the API does) so the repeated DST hour stays two buckets.
+  const offsetOf=(p)=>{const m=/([+-]\d{2}:\d{2})/.exec(p.timeZoneName||"");return m?m[1]:"+00:00";};
+  const keyOf=(d,hour)=>{const p=partsOf(d);const h=p.hour==="24"?"00":p.hour;return hour?`${p.year}-${p.month}-${p.day}T${h}:00${offsetOf(p)}`:`${p.year}-${p.month}-${p.day}`;};
   const end=new Date(a.generated_at);
   let start = a.window_start ? new Date(a.window_start) : null;
   if(!start){return a.series;}
@@ -269,7 +271,7 @@ function buckets(a){
     if(t>=end.getTime())break;
   }
   for(const r of a.series){if(!seen.has(r.bucket))out.push(r);}
-  out.sort((x,y)=>x.bucket<y.bucket?-1:1);
+  out.sort((x,y)=>Date.parse(x.bucket)-Date.parse(y.bucket));
   return out.length>400?out.slice(-400):out;
 }
 function bars(svgId, data, layers, fmt, labelOf, what){
@@ -298,7 +300,7 @@ function bars(svgId, data, layers, fmt, labelOf, what){
 function renderCharts(a){
   const data=buckets(a);
   const hour=a.series_granularity==="hour";
-  const lab=(b,short)=>hour?(short?b.slice(11,16):b.replace("T"," ")):(short?b.slice(5):b);
+  const lab=(b,short)=>hour?(short?b.slice(11,16):b.slice(0,16).replace("T"," ")+" (UTC"+b.slice(16)+")"):(short?b.slice(5):b);
   $("series-note").textContent = `per ${a.series_granularity} · Europe/Amsterdam · window ${a.window}`;
   bars("ch-req",data,[{name:"ok",c:"var(--bar)",v:d=>d.requests-(d.failed||0)},{name:"failed",c:"var(--bad)",v:d=>d.failed}],v=>k(Math.round(v)),lab,"Requests");
   bars("ch-tok",data,[{name:"input",c:"var(--bar)",v:d=>d.input_tokens},{name:"output",c:"var(--bar2)",v:d=>d.output_tokens}],k,lab,"Tokens");
