@@ -71,3 +71,15 @@ docker-compose.override.yml
 deploy/cproxy.env
 auths/*.json
 logs/
+
+# cproxy-ui runtime artifacts and local-only data
+ui/requests.jsonl
+ui/data/
+ui/venv/
+ui/.pytest_cache/
+__pycache__/
+deploy/cproxy-ui.env
+# raw captured queue sample carries the live client API key; the committed copy is usage_queue_sample.redacted.json
+ui/tests/fixtures/usage_queue_sample.json
+# retired credential material
+retired/
