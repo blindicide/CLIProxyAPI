@@ -1,0 +1,16 @@
+[Unit]
+Description=cproxy (CLIProxyAPI fork - Claude Code subscription relay, cproxy.net.a.blindicide.ru)
+After=network.target
+
+[Service]
+Type=simple
+User=clawuser
+WorkingDirectory=/home/clawuser/projects/cproxy
+ExecStart=/home/clawuser/projects/cproxy/cli-proxy-api -config /home/clawuser/projects/cproxy/config.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

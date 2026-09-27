@@ -1,0 +1,31 @@
+# cproxy — CLIProxyAPI fork deployed as a Claude Code subscription relay.
+# Copy to ../config.yaml, then set access.api-keys and claude OAuth credentials
+# under oauth.auth-dir before starting the service.
+config-version: 8
+
+server:
+  # Bind loopback only; nginx terminates TLS and fronts this port.
+  host: "127.0.0.1"
+  port: 31524
+  commercial-mode: false
+
+management:
+  allow-remote: false
+  secret-key: "CHANGE-ME"
+
+access:
+  api-keys:
+    - "CHANGE-ME"
+
+oauth:
+  auth-dir: "/home/clawuser/projects/cproxy/auths"
+
+routing:
+  strategy: "round-robin"
+
+observability:
+  logs:
+    debug: false
+    logging-to-file: true
+  usage:
+    usage-statistics-enabled: true
