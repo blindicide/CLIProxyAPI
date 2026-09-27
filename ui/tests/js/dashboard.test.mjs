@@ -101,4 +101,33 @@ test("charts announce a data summary", () => {
   assert.equal(element("ch-req").attributes["aria-label"], "Requests: ok 6, failed 1 over 2 buckets; peak 5 at 2026-09-27");
 });
 
+// The whole refresh path with a realistic API response: catches ordering bugs (e.g. a const
+// used before its declaration) that only show when refresh() runs end to end.
+async function refreshScenario(ingestExtra, expectBanner) {
+  const analytics = {
+    window: "24h", version: "0.2.0", generated_at: "2026-09-27T13:00:00Z", window_start: "2026-09-26T13:00:00Z",
+    series_granularity: "hour", series: [{bucket: "2026-09-27T15:00+02:00", requests: 2, failed: 1, input_tokens: 10, output_tokens: 5, cost_usd: 0.001}],
+    summary: {requests: 2, success: 1, failed: 1, success_pct: 50, failed_pct: 50, input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0,
+      estimated_cost_usd: 0.001, unpriced_requests: 0, unpriced_models: {}, avg_latency_ms: 10, p50_latency_ms: 10, p95_latency_ms: 10, avg_ttft_ms: 5, ttft_samples: 1,
+      stream_requests: 1, non_stream_requests: 1, requests_per_min: 0.001},
+    per_model: [], per_day: [], per_endpoint: [], per_key: [], per_client_ip: [], per_user_agent: [],
+    management: {reachable: true},
+    ingest: {last_ingest_age_s: 3, last_ingest_at: "2026-09-27T13:00:00Z", pending_writes: 0, corrupt_lines: 0, loss_windows: [], loss_windows_total: 0,
+      queue_retention_s: 60, queue_retention_source: "cproxy config",
+      storage: {requests_file_bytes: 54607, backups: 1, newest_backup_at: "2026-09-27T12:00:00Z", warnings: []}, ...ingestExtra},
+  };
+  const responses = {"/api/analytics": analytics, "/api/requests": {requests: []}, "/api/quota": {available: true, credentials: [], client_keys: []}};
+  context.fetch = async (url) => ({ok: true, status: 200, json: async () => responses[Object.keys(responses).find((p) => url.startsWith(p))]});
+  await run("refresh()");
+  const banner = element("banner").textContent;
+  assert.ok(!banner.includes("unreachable"), banner);
+  assert.ok(!banner.includes("before initialization"), banner);
+  if (expectBanner) assert.ok(banner.includes(expectBanner), banner);
+  assert.ok(element("f-storage").textContent.includes("1 backup(s)"), element("f-storage").textContent);
+  assert.equal(element("live-text").textContent, "live · ingest ok");
+}
+await refreshScenario({}, null);
+await refreshScenario({storage: {requests_file_bytes: 1, backups: 1, newest_backup_at: "2026-09-20T00:00:00Z", warnings: ["newest backup is 180 h old"]}}, "Storage: newest backup is 180 h old");
+passed++;
+
 console.log(`dashboard js: ${passed} passed`);

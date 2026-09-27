@@ -44,3 +44,27 @@ def test_unit_never_manages_cproxy_itself():
     for line in exec_lines:
         for forbidden in ("systemctl", "config.yaml", "auths", ".claude"):
             assert forbidden not in line, line
+
+
+def _unit(name: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for line in (UNIT.parent / name).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith(("#", "[")) and "=" in line:
+            key, value = line.split("=", 1)
+            out.setdefault(key, []).append(value)
+    return out
+
+
+def test_backup_unit_is_sandboxed_and_offline():
+    d = _unit("cproxy-ui-backup.service")
+    assert d["Type"] == ["oneshot"] and d["User"] == ["clawuser"]
+    assert d["ProtectHome"] == ["tmpfs"] and d["BindReadOnlyPaths"] == ["/home/clawuser/projects/cproxy/ui"]
+    assert d["BindPaths"] == ["/home/clawuser/projects/cproxy/ui/data"]  # never writes requests.jsonl
+    assert d["PrivateNetwork"] == ["yes"] and d["UMask"] == ["0077"]
+    assert d["ExecStart"][0].endswith("tools/datastore.py backup --keep 30")
+
+
+def test_backup_timer_is_daily_and_catches_up():
+    d = _unit("cproxy-ui-backup.timer")
+    assert d["OnCalendar"] == ["*-*-* 03:17:00"] and d["Persistent"] == ["true"]

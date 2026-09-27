@@ -37,6 +37,10 @@ ANALYTICS_TTL_SECONDS = 5.0
 # On shutdown, let an in-flight queue pop finish and be persisted (cproxy has already removed
 # those records). Longer than the 10 s HTTP timeout, well below systemd's 90 s stop timeout.
 SHUTDOWN_GRACE_SECONDS = 15.0
+# Storage warnings shown on the dashboard (history is never truncated automatically).
+DISK_FREE_WARN_BYTES = 2 * 1024**3
+BACKUP_STALE_SECONDS = 48 * 3600
+BACKUP_PREFIX = "cproxy-ui-backup-"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("cproxy-ui")
@@ -172,6 +176,44 @@ def quota_from_auth_files(payload: Any, now: datetime) -> dict[str, Any]:
             }
         )
     return {"credentials": credentials, "has_data": any(c["limits"] for c in credentials)}
+
+
+def storage_status(data_dir: Path, now: datetime) -> dict[str, Any]:
+    """Size of the history, free disk, and the newest backup written by tools/datastore.py."""
+    requests_path = data_dir / "requests.jsonl"
+    try:
+        size = requests_path.stat().st_size
+    except OSError:
+        size = None
+    try:
+        disk = os.statvfs(data_dir)
+        free = disk.f_bavail * disk.f_frsize
+    except OSError:
+        free = None
+    backups = sorted((data_dir / "data" / "backups").glob(f"{BACKUP_PREFIX}*.tar.gz"))
+    newest_at = None
+    if backups:
+        stamp = backups[-1].name[len(BACKUP_PREFIX) : -len(".tar.gz")]
+        try:
+            newest_at = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+        except ValueError:
+            newest_at = None
+    backup_age = round((now - newest_at).total_seconds()) if newest_at else None
+    warnings = []
+    if free is not None and free < DISK_FREE_WARN_BYTES:
+        warnings.append(f"only {free / 1024**3:.1f} GiB free on the data disk")
+    if backup_age is None:
+        warnings.append("no backup of requests.jsonl yet")
+    elif backup_age > BACKUP_STALE_SECONDS:
+        warnings.append(f"newest backup is {backup_age / 3600:.0f} h old")
+    return {
+        "requests_file_bytes": size,
+        "disk_free_bytes": free,
+        "backups": len(backups),
+        "newest_backup_at": iso_utc(newest_at) if newest_at else None,
+        "newest_backup_age_s": backup_age,
+        "warnings": warnings,
+    }
 
 
 def mask_key_usage(payload: Any) -> list[dict[str, Any]]:
@@ -328,6 +370,7 @@ def create_app(
             "last_ingest_at": state.get("last_ingest_at"),
             "last_ingest_age_s": _age_seconds(state.get("last_ingest_at"), now),
             "poll_interval_s": poll_interval,
+            "storage": storage_status(data_dir, now),
             "queue_retention_s": app.state.queue_retention_s,
             "queue_retention_source": app.state.queue_retention_source,
             "loss_windows_total": state.get("loss_windows_total") or 0,

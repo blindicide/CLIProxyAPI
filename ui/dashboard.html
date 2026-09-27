@@ -137,6 +137,7 @@ footer{margin-top:24px;color:var(--muted);font-size:12px;border-top:1px solid va
   <span>Prices: <a id="f-src" href="#" target="_blank" rel="noopener">official Anthropic pricing</a> · as of <b id="f-asof">—</b></span>
   <span id="f-assume"></span>
   <span id="f-retention"></span>
+  <span id="f-storage"></span>
   <span>Not counted: requests cproxy rejects before provider dispatch (e.g. unknown model → 400) emit no usage record.</span>
 </footer>
 </main>
@@ -359,9 +360,11 @@ async function refresh(){
       else{setLive("bad","stale · management API unreachable");banner.push(`Management API unreachable (${a.management.last_error||"no successful poll in the last 30 s"}). Last successful poll ${a.management.last_ok_at?localTs(a.management.last_ok_at):"never"} — figures below may be stale.`);}
       if(a.ingest.last_ingest_at==null)$("ingest-age").textContent="never";
       if(a.ingest.pending_writes){setLive("bad","disk write failing");banner.push(`${a.ingest.pending_writes} usage record(s) held in memory: writing requests.jsonl failed (${a.ingest.last_write_error||"unknown error"}). They are lost if cproxy-ui restarts before the disk recovers.`);}
-      const lw=a.ingest.loss_windows||[];const last=lw[lw.length-1];
+      const lw=a.ingest.loss_windows||[];const last=lw[lw.length-1];const st=a.ingest.storage||{};
       if(last&&Date.now()-Date.parse(last.detected_at)<7*86400e3)banner.push(`Possible usage loss: ${a.ingest.loss_windows_total} gap(s) where cproxy-ui was not draining for longer than the ${a.ingest.queue_retention_s} s queue retention; latest ${localTs(last.from)} – ${localTs(last.to)} (${Math.round(last.unobserved_s)} s). Requests in that span are missing from these figures.`);
+      $("f-storage").textContent=`History ${st.requests_file_bytes==null?"—":k(st.requests_file_bytes)+"B"} on disk; ${st.backups||0} backup(s), newest ${st.newest_backup_at?localTs(st.newest_backup_at):"none"}.`;
       $("f-retention").textContent=`Usage queue retention ${a.ingest.queue_retention_s} s (${a.ingest.queue_retention_source}); ${a.ingest.loss_windows_total} loss window(s) detected.`;
+      if((st.warnings||[]).length)banner.push("Storage: "+st.warnings.join("; ")+" (see the runbook: tools/datastore.py).");
       if(a.ingest.corrupt_lines)banner.push(`${a.ingest.corrupt_lines} corrupt line(s) in requests.jsonl ignored (kept on disk).`);
     }else{
       setLive("bad","dashboard API error");

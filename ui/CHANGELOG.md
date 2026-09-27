@@ -3,6 +3,15 @@
 Versions are shown in the dashboard header/footer, `/api/health` and
 `/api/analytics` (`ui/version.py`).
 
+## Unreleased
+
+- `tools/verify_totals.py`: independent recomputation of the analytics from
+  `requests.jsonl` (`ad577bb`).
+- `tools/datastore.py` backup / verify / merge-restore / archive / status, a
+  sandboxed daily backup timer (keeps 30), and storage + backup freshness in
+  `/api/health` with dashboard warnings. History is still never truncated
+  automatically.
+
 ## 0.2.0 — 2026-09-27 (tag `cproxy-ui-v0.2`)
 
 Data safety

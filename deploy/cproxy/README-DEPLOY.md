@@ -272,6 +272,64 @@ sudo cp "$B" "$C" && sudo nginx -t && sudo systemctl reload nginx
 
 and repeat the `/v1/models` and completion checks. Never leave the API broken.
 
+### History retention, backup and restore
+
+**Retention policy: `ui/requests.jsonl` is never truncated or rotated
+automatically** (the mandate requires that no record is lost). It grows by about
+2 KB per request on disk, and cproxy-ui keeps about 3.2 KB per request in memory
+(~0.6 GiB RAM per 200k requests). `/api/health` → `ingest.storage` reports the
+file size, free disk and newest backup, and the dashboard warns when free disk
+drops below 2 GiB or the newest backup is older than 48 h. Service logs go to
+journald and rotate with it.
+
+All operations use `ui/tools/datastore.py` (stdlib only, run as `clawuser`
+from `ui/`):
+
+| task | command |
+|---|---|
+| backup (also daily via `cproxy-ui-backup.timer`, 03:17 ± 15 min, keeps 30) | `venv/bin/python tools/datastore.py backup` |
+| check a backup | `venv/bin/python tools/datastore.py verify data/backups/<file>.tar.gz` |
+| sizes, record count, newest backup | `venv/bin/python tools/datastore.py status` |
+| restore (merge) | see below |
+| archive old history | see below |
+
+A backup is `data/backups/cproxy-ui-backup-<UTC>.tar.gz` (0600) with
+`requests.jsonl` (complete lines only, so it is consistent even mid-append),
+`ingest_state.json` and a `MANIFEST.json` (record count + SHA-256), verified
+right after writing. It lives on the same disk: copy `data/backups/` off-host
+for disaster recovery.
+
+**Restore is a merge**: records in the backup that are missing from the live
+file are added, nothing is removed, so restoring an old backup can never drop
+newer records. **Archive** moves records older than a date into
+`data/archive/requests-before-<date>-<UTC>.jsonl.gz` after checking that the
+split partitions the records exactly; archived records then no longer appear in
+the dashboard's analytics (they stay in the archive). Both keep the previous
+file as `requests.jsonl.pre-restore-*` / `.pre-archive-*` (delete it yourself
+once satisfied) and **refuse to run while cproxy-ui is active**, because
+`requests.jsonl` is bind-mounted into the running service. The stop must be
+short: cproxy drops unread usage records after its 60 s queue retention (a
+longer gap is reported as a loss window).
+
+```bash
+cd /home/clawuser/projects/cproxy/ui
+venv/bin/python tools/datastore.py backup                       # safety net first
+sudo systemctl stop cproxy-ui
+venv/bin/python tools/datastore.py restore data/backups/<file>.tar.gz
+#   or: venv/bin/python tools/datastore.py archive --before 2026-01-01
+sudo systemctl start cproxy-ui
+curl -s http://127.0.0.1:24688/api/health | python3 -m json.tool | head -20
+venv/bin/python tools/verify_totals.py                          # totals still consistent
+```
+
+Timer install (already done on this host):
+
+```bash
+sudo install -m 644 deploy/cproxy-ui/cproxy-ui-backup.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cproxy-ui-backup.timer
+sudo systemctl start cproxy-ui-backup.service     # first backup now
+```
+
 ### Pricing
 
 `ui/pricing.py` — official Anthropic list prices

@@ -18,6 +18,7 @@ server-side and returned by `/api/health` and `/api/analytics`.
 | `pricing.py` | Anthropic list-price table, model id resolution, per-record cost |
 | `analytics.py` | window filtering and aggregation (`aggregate`, `recent`), `DerivedCache` |
 | `export.py` | CSV export rows (`/api/export.csv`) with formula-injection guard |
+| `tools/datastore.py` | backup / verify / merge-restore / archive / status for `requests.jsonl` |
 | `tools/verify_totals.py` | independent recomputation of totals from `requests.jsonl` vs `/api/analytics` |
 | `dashboard.html` | the whole UI: inline CSS + vanilla JS + inline SVG charts, no external assets |
 | `tests/` | pytest suite; `fixtures/usage_queue_sample.redacted.json` holds real captured queue records |
