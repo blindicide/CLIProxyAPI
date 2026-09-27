@@ -8,7 +8,7 @@
 <title>cproxy analytics v__CPROXY_UI_VERSION__</title>
 <style>
 :root{color-scheme:light dark;--bg:#0f1218;--panel:#171c25;--panel2:#1d2330;--line:#2a3242;--text:#e8edf5;--muted:#93a0b4;--accent:#8ab8ff;--ok:#7fdc9c;--warn:#f3c26b;--bad:#ff8a8a;--bar:#5d8fe6;--bar2:#b98cf0;--bar3:#6fcfb8}
-@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f6;--line:#dde2ea;--text:#18202c;--muted:#5f6b7d;--accent:#2759c4;--ok:#1d8a4a;--warn:#a86b00;--bad:#c53030;--bar:#3a6fd6;--bar2:#8a55d6;--bar3:#1f9c82}}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f6;--line:#dde2ea;--text:#18202c;--muted:#5f6b7d;--accent:#2759c4;--ok:#17753e;--warn:#8a5700;--bad:#c53030;--bar:#3a6fd6;--bar2:#8a55d6;--bar3:#1f9c82}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 main{max-width:1440px;margin:0 auto;padding:18px 16px 40px}
@@ -65,6 +65,8 @@ svg.chart .grid{stroke:var(--line);stroke-width:1}
 .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 4px 0 8px;vertical-align:-1px}
 footer{margin-top:24px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:10px;display:flex;flex-wrap:wrap;gap:6px 18px}
 .tag{font-size:10.5px;border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--muted)}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:640px){.card .v{font-size:16px}h1{font-size:18px}}
 </style>
 </head>
@@ -109,23 +111,23 @@ footer{margin-top:24px;color:var(--muted);font-size:12px;border-top:1px solid va
 
 <section>
   <div class="sec-head"><h2>Per model</h2><span class="muted" id="unpriced-note"></span></div>
-  <div class="tw"><table id="t-model"></table></div>
+  <div class="tw"><table id="t-model" data-caption="Usage per model"></table></div>
 </section>
 
 <section class="grid2">
-  <div><div class="sec-head"><h2>Per day (local)</h2></div><div class="tw"><table id="t-day"></table></div></div>
-  <div><div class="sec-head"><h2>Per endpoint</h2></div><div class="tw"><table id="t-endpoint"></table></div></div>
+  <div><div class="sec-head"><h2>Per day (local)</h2></div><div class="tw"><table id="t-day" data-caption="Usage per day, local time"></table></div></div>
+  <div><div class="sec-head"><h2>Per endpoint</h2></div><div class="tw"><table id="t-endpoint" data-caption="Usage per endpoint"></table></div></div>
 </section>
 
 <section class="grid3">
-  <div><div class="sec-head"><h2>Per client key</h2></div><div class="tw"><table id="t-key"></table></div></div>
-  <div><div class="sec-head"><h2>Per client IP</h2></div><div class="tw"><table id="t-ip"></table></div></div>
-  <div><div class="sec-head"><h2>Per user agent</h2></div><div class="tw"><table id="t-ua"></table></div></div>
+  <div><div class="sec-head"><h2>Per client key</h2></div><div class="tw"><table id="t-key" data-caption="Usage per client API key (masked)"></table></div></div>
+  <div><div class="sec-head"><h2>Per client IP</h2></div><div class="tw"><table id="t-ip" data-caption="Usage per client IP"></table></div></div>
+  <div><div class="sec-head"><h2>Per user agent</h2></div><div class="tw"><table id="t-ua" data-caption="Usage per user agent"></table></div></div>
 </section>
 
 <section>
   <div class="sec-head"><h2>Recent requests</h2><span class="muted">last 100 · all time · times local (hover for UTC)</span></div>
-  <div class="tw"><table id="t-recent"></table></div>
+  <div class="tw"><table id="t-recent" data-caption="Last 100 requests, newest first"></table></div>
 </section>
 
 <footer>
@@ -193,7 +195,8 @@ function renderCards(a){
 }
 
 function table(el, cols, rows, emptyMsg){
-  const head = "<thead><tr>"+cols.map(c=>`<th class="${c.num?"num":""}">${esc(c.h)}</th>`).join("")+"</tr></thead>";
+  const cap = $(el).dataset.caption ? `<caption class="sr-only">${esc($(el).dataset.caption)}</caption>` : "";
+  const head = cap+"<thead><tr>"+cols.map(c=>`<th scope="col" class="${c.num?"num":""}">${esc(c.h||"")}</th>`).join("")+"</tr></thead>";
   if(!rows.length){$(el).innerHTML=head+`<tbody><tr><td class="empty" colspan="${cols.length}">${esc(emptyMsg||"no data in this window")}</td></tr></tbody>`;return;}
   $(el).innerHTML = head+"<tbody>"+rows.map(r=>"<tr>"+cols.map(c=>`<td class="${c.num?"num":""}${c.wrap?" wrap":""}"${c.title?` title="${esc(c.title(r))}"`:""}>${c.f(r)}</td>`).join("")+"</tr>").join("")+"</tbody>";
 }
@@ -268,10 +271,14 @@ function buckets(a){
   out.sort((x,y)=>x.bucket<y.bucket?-1:1);
   return out.length>400?out.slice(-400):out;
 }
-function bars(svgId, data, layers, fmt, labelOf){
+function bars(svgId, data, layers, fmt, labelOf, what){
   const svg=$(svgId); const W=svg.clientWidth||400, H=150, L=46, B=18, T=8, R=6;
-  const max=Math.max(0,...data.map(d=>layers.reduce((s,l)=>s+(Number(l.v(d))||0),0)));
-  if(!data.length||max<=0){svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle">no data in this window</text>`;return;}
+  const totals=data.map(d=>layers.reduce((s,l)=>s+(Number(l.v(d))||0),0));
+  const max=Math.max(0,...totals);
+  if(!data.length||max<=0){svg.setAttribute("aria-label",`${what}: no data in this window`);svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle">no data in this window</text>`;return;}
+  const peak=totals.indexOf(max);
+  const summary=`${what}: ${layers.map(l=>`${l.name} ${fmt(data.reduce((s,d)=>s+(Number(l.v(d))||0),0))}`).join(", ")} over ${data.length} buckets; peak ${fmt(max)} at ${labelOf(data[peak].bucket)}`;
+  svg.setAttribute("aria-label",summary);
   const cw=(W-L-R)/data.length, bw=Math.max(1,cw*0.78);
   let g="";
   for(let i=0;i<=3;i++){const y=T+(H-T-B)*(1-i/3);g+=`<line class="grid" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text x="${L-4}" y="${y+3}" text-anchor="end">${esc(fmt(max*i/3))}</text>`;}
@@ -285,16 +292,16 @@ function bars(svgId, data, layers, fmt, labelOf){
   const every=Math.max(1,Math.ceil(data.length/6));
   data.forEach((d,i)=>{if(i%every===0||i===data.length-1&&data.length<8)g+=`<text x="${(L+i*cw+cw/2).toFixed(1)}" y="${H-5}" text-anchor="middle">${esc(labelOf(d.bucket,true))}</text>`;});
   svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
-  svg.innerHTML=g;
+  svg.innerHTML=`<title>${esc(summary)}</title>`+g;
 }
 function renderCharts(a){
   const data=buckets(a);
   const hour=a.series_granularity==="hour";
   const lab=(b,short)=>hour?(short?b.slice(11,16):b.replace("T"," ")):(short?b.slice(5):b);
   $("series-note").textContent = `per ${a.series_granularity} · Europe/Amsterdam · window ${a.window}`;
-  bars("ch-req",data,[{name:"ok",c:"var(--bar)",v:d=>d.requests-(d.failed||0)},{name:"failed",c:"var(--bad)",v:d=>d.failed}],v=>k(Math.round(v)),lab);
-  bars("ch-tok",data,[{name:"input",c:"var(--bar)",v:d=>d.input_tokens},{name:"output",c:"var(--bar2)",v:d=>d.output_tokens}],k,lab);
-  bars("ch-cost",data,[{name:"cost",c:"var(--bar3)",v:d=>d.cost_usd||0}],usd,lab);
+  bars("ch-req",data,[{name:"ok",c:"var(--bar)",v:d=>d.requests-(d.failed||0)},{name:"failed",c:"var(--bad)",v:d=>d.failed}],v=>k(Math.round(v)),lab,"Requests");
+  bars("ch-tok",data,[{name:"input",c:"var(--bar)",v:d=>d.input_tokens},{name:"output",c:"var(--bar2)",v:d=>d.output_tokens}],k,lab,"Tokens");
+  bars("ch-cost",data,[{name:"cost",c:"var(--bar3)",v:d=>d.cost_usd||0}],usd,lab,"Estimated cost");
 }
 
 function qbar(label,w){
