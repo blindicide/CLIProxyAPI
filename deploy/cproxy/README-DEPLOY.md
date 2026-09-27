@@ -96,6 +96,8 @@ Note `401 "OAuth access token has been revoked"` vs `429 rate_limit_error`:
 
 FastAPI + uvicorn app in `ui/` (version in `ui/version.py`, currently 0.1.0),
 modelled on the agy-proxy `ui/` skin.
+Developer docs (architecture, record schema, API shapes, pricing rules, test
+and secret policy): [`ui/README.md`](../../ui/README.md).
 
 - Public: https://cproxy.net.a.blindicide.ru/ (dashboard at `/`, API at
   `^/(v1|v0|health)` — note the backend health route is `/healthz`, which the
