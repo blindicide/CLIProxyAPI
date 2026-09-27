@@ -377,6 +377,9 @@ async function refresh(){
       $("f-storage").textContent=`History ${st.requests_file_bytes==null?"—":k(st.requests_file_bytes)+"B"} on disk; ${st.backups||0} backup(s), newest ${st.newest_backup_at?localTs(st.newest_backup_at):"none"}.`;
       $("f-retention").textContent=`Usage queue retention ${a.ingest.queue_retention_s} s (${a.ingest.queue_retention_source}); ${a.ingest.loss_windows_total} loss window(s) detected.`;
       if((st.warnings||[]).length)banner.push("Storage: "+st.warnings.join("; ")+" (see the runbook: tools/datastore.py).");
+      const ar=a.ingest.archive||{};
+      if(ar.last_error)banner.push("Archiving failed, nothing was removed: "+ar.last_error);
+      if(ar.lock_held_warning)banner.push("Archiving: "+ar.lock_held_warning);
       if(a.ingest.corrupt_lines)banner.push(`${a.ingest.corrupt_lines} corrupt line(s) in requests.jsonl ignored (kept on disk).`);
     }else{
       setLive("bad","dashboard API error");

@@ -158,6 +158,9 @@ section, `ExecStartPre` and `UMask`.
   cproxy restarts, usage from that gap is lost.
 - Requests that cproxy rejects before provider dispatch (e.g. unknown model →
   400 `model_not_found`) emit no usage record and never appear in the dashboard.
+  Gaps in the recorded `request_id` sequence do **not** count them: cproxy's
+  counter (`internal/logging/requestid.go`) is consumed by every `/v1*` request,
+  including `/v1/models`, auth failures and scanners, and resets on restart.
 - The raw client `api_key` is masked at ingest (`sha256:<12 hex>…<last 4>`,
   plus `key-N` = position in `api-keys`). It is never written to disk, logs
   or API responses (covered by tests).
@@ -304,6 +307,14 @@ warning report it. The service runs the job itself because it owns the file
 and the in-memory records; the timer only makes the nightly backup.
 Conservation check at any time:
 `venv/bin/python tools/datastore.py audit` (live ∪ archives == total ingested).
+
+Measured on this host with 20k records spread over 400 days (10,880
+archived): preparing (fresh backup + archive, no lock) 3.3 s, the rewrite that
+holds the service's write lock 0.41 s, peak RSS 118 MiB. The locked part scales
+with the size of the kept file (~40 MiB/s here, ~10 s even at the 900 MB memory
+cap). While it runs the usage queue is not drained, so every run records
+`lock_held_s` and `/api/health` warns (`archive.lock_held_warning`, dashboard
+banner) if it exceeds a third of the queue retention.
 
 Archived records stay in the figures: `window=all` aggregates the archives
 through the same code as live records (summary, per-day series, every table),

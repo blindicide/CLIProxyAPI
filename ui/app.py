@@ -411,7 +411,9 @@ def create_app(
             store.save_state()
             return {"archived": 0}
         try:
+            prepare_started = clock()
             plan = await run_in_threadpool(archiver.prepare, data_dir, cutoff)
+            prepare_s = clock() - prepare_started
             if plan is None:
                 store.state["archive_last_error"] = None
                 store.save_state()
@@ -420,7 +422,11 @@ def create_app(
             await run_in_threadpool(lock.__enter__)  # waits for a running backup to finish
             try:
                 async with app.state.drain_lock:
+                    # While this runs the poller cannot drain; cproxy drops unread records after
+                    # its queue retention, so the hold time is measured and reported.
+                    locked_at = clock()
                     await run_in_threadpool(archiver.commit, data_dir, plan)
+                    lock_held_s = clock() - locked_at
                     old = plan["old_ids"]
                     store.records = [r for r in store.records if r.get("id") not in old]
                     store.ids -= old
@@ -434,7 +440,7 @@ def create_app(
             store.save_state()
             logger.error("automatic archive failed, history left untouched: %s", exc)
             return {"archived": 0, "error": store.state["archive_last_error"]}
-        result = archiver.summary(plan, now)
+        result = {**archiver.summary(plan, now), "prepare_s": round(prepare_s, 2), "lock_held_s": round(lock_held_s, 2)}
         store.state["archived_total"] = int(store.state.get("archived_total") or 0) + result["archived"]
         store.state["archive_last_success_at"] = iso_utc(now)
         store.state["archive_last_error"] = None
@@ -491,7 +497,13 @@ def create_app(
 
     def archive_status() -> dict[str, Any]:
         state = app.state.store.state
+        last = state.get("archive_last_result") or {}
+        held = last.get("lock_held_s")
+        limit = app.state.queue_retention_s / 3
         return {
+            "lock_held_warning": (f"last archive held the write lock {held:.1f} s (> {limit:.0f} s, a third of the "
+                                  f"{app.state.queue_retention_s:.0f} s queue retention); archive more often or raise the retention")
+            if held is not None and held > limit else None,
             "after_days": archiver.ARCHIVE_AFTER_DAYS,
             "archived_total": state.get("archived_total") or 0,
             "archives": len(datastore.archive_files(data_dir)),

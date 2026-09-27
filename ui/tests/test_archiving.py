@@ -235,3 +235,28 @@ def test_backup_waits_for_an_archive_rewrite(tmp_path, sample):
         assert not finished.wait(0.3)  # blocked while the rewrite holds the lock
     worker.join(10)
     assert finished.is_set()
+
+
+async def test_lock_hold_time_is_measured_and_warned(make_app, mgmt, sample, tmp_path, api_client):
+    ticks = [100.0, 101.0, 200.0, 230.0]  # prepare 1 s; commit holds the lock 30 s
+
+    def clock():
+        return ticks.pop(0) if ticks else 230.0
+
+    app = make_app(clock=clock)
+    await _ingest(app, mgmt, _raws(sample, [1, 300], "t"))
+    result = await app.state.archive_once(app, NOW)
+    assert result["prepare_s"] == 1.0 and result["lock_held_s"] == 30.0
+    async with api_client(app) as client:
+        archive = (await client.get("/api/health")).json()["ingest"]["archive"]
+    assert archive["last_result"]["lock_held_s"] == 30.0
+    assert "held the write lock 30.0 s (> 20 s" in archive["lock_held_warning"]
+
+
+async def test_fast_archive_has_no_lock_warning(make_app, mgmt, sample, api_client):
+    app = make_app()
+    await _ingest(app, mgmt, _raws(sample, [1, 300], "q"))
+    await app.state.archive_once(app, NOW)
+    async with api_client(app) as client:
+        archive = (await client.get("/api/health")).json()["ingest"]["archive"]
+    assert archive["lock_held_warning"] is None and archive["last_result"]["lock_held_s"] < 5

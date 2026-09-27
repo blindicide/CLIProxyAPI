@@ -9,6 +9,10 @@ Versions are shown in the dashboard header/footer, `/api/health` and
   pricing, analytics, dashboard version, `/v1/models` = 17, independent totals,
   conservation audit; `--completion` optional). `/api/health?strict=1` answers
   503 when degraded, for monitors.
+- Archive runs record `prepare_s` and `lock_held_s`; `/api/health` and the
+  dashboard warn when the lock was held longer than a third of the queue
+  retention (measured at 20k records: 3.3 s prepare, 0.41 s locked). Archive
+  failures now also raise a dashboard banner.
 
 ## 0.3.0 — 2026-09-27 (tag `cproxy-ui-v0.3`)
 
