@@ -67,3 +67,7 @@ docker-compose.override.yml
 
 # Local LLM Wiki vault
 .llm-wiki
+# cproxy local secrets / runtime artifacts
+deploy/cproxy.env
+auths/*.json
+logs/
