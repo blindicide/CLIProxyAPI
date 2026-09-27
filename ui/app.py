@@ -231,6 +231,9 @@ def create_app(
             "total_ingested": state.get("total_ingested"),
             "duplicates_skipped": state.get("duplicates_skipped"),
             "malformed_skipped": state.get("malformed_skipped"),
+            "corrupt_lines": app.state.store.corrupt_lines,
+            "pending_writes": len(app.state.store.pending),
+            "last_write_error": state.get("last_write_error"),
             "last_drain_at": state.get("last_drain_at"),
             "last_ingest_at": state.get("last_ingest_at"),
             "last_ingest_age_s": _age_seconds(state.get("last_ingest_at"), now),
@@ -248,7 +251,7 @@ def create_app(
         now = utc_now()
         mgmt = management_status(now)
         payload = {
-            "status": "ok" if mgmt["reachable"] else "degraded",
+            "status": "ok" if mgmt["reachable"] and not app.state.store.pending else "degraded",
             "service": SERVICE,
             "version": VERSION,
             "build_date": BUILD_DATE,

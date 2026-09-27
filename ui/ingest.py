@@ -213,6 +213,9 @@ class RecordStore:
         self.state_path = state_path
         self.ids: set[str] = set()
         self.records: list[dict[str, Any]] = []
+        self.corrupt_lines = 0
+        self.pending: list[dict[str, Any]] = []
+        self._dirty_tail = False
         self.state: dict[str, Any] = {
             "total_ingested": 0,
             "duplicates_skipped": 0,
@@ -222,6 +225,7 @@ class RecordStore:
             "last_error": None,
             "last_error_at": None,
             "last_ok_at": None,
+            "last_write_error": None,
         }
         self._load()
 
@@ -233,47 +237,86 @@ class RecordStore:
         except (FileNotFoundError, json.JSONDecodeError):
             pass
         try:
-            with self.requests_path.open(encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning("skipping corrupt line in %s", self.requests_path.name)
-                        continue
-                    if isinstance(record, dict) and record.get("id") not in self.ids:
-                        self.ids.add(record.get("id"))
-                        self.records.append(record)
+            data = self.requests_path.read_bytes()
         except FileNotFoundError:
-            pass
+            return
+        for line in data.decode("utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                record = None
+            if not isinstance(record, dict) or not record.get("id"):
+                self.corrupt_lines += 1
+                continue
+            if record["id"] not in self.ids:
+                self.ids.add(record["id"])
+                self.records.append(record)
+        if self.corrupt_lines:
+            logger.warning("%s has %d corrupt line(s); they are kept on disk and ignored", self.requests_path.name, self.corrupt_lines)
+        if data and not data.endswith(b"\n"):
+            # A crash mid-write left a torn last line. Terminate it so the next append starts on
+            # a fresh line instead of being glued onto (and lost with) the fragment.
+            with self.requests_path.open("ab") as handle:
+                handle.write(b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            logger.warning("terminated torn last line in %s", self.requests_path.name)
 
     def append(self, records: list[dict[str, Any]]) -> int:
+        """Persist new records (fsync'd). Returns how many reached disk.
+
+        Queue records are already popped when they get here, so a failed write (disk full,
+        I/O error) must not drop them: they stay in ``pending`` and are retried first on the
+        next append.
+        """
+        queued = {record["id"] for record in self.pending}
         fresh = []
         for record in records:
-            if record["id"] in self.ids:
+            if record["id"] in self.ids or record["id"] in queued:
                 self.state["duplicates_skipped"] += 1
                 continue
-            self.ids.add(record["id"])
+            queued.add(record["id"])
             fresh.append(record)
-        if fresh:
+        batch = self.pending + fresh
+        if not batch:
+            return 0
+        try:
             self.requests_path.parent.mkdir(parents=True, exist_ok=True)
             with self.requests_path.open("a", encoding="utf-8") as handle:
-                for record in fresh:
+                if self._dirty_tail:
+                    # A previous failed write may have left a partial line behind.
+                    handle.write("\n")
+                for record in batch:
                     handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            self.records.extend(fresh)
-            self.state["total_ingested"] += len(fresh)
-            self.state["last_ingest_at"] = iso_utc(utc_now())
-        return len(fresh)
+        except OSError as exc:
+            self.pending = batch
+            self._dirty_tail = True
+            self.state["last_write_error"] = f"{type(exc).__name__}: {exc.strerror or exc}"
+            logger.error("could not persist %d usage record(s), keeping them in memory for retry: %s", len(batch), self.state["last_write_error"])
+            return 0
+        self.pending = []
+        self._dirty_tail = False
+        self.state["last_write_error"] = None
+        self.ids.update(record["id"] for record in batch)
+        self.records.extend(batch)
+        self.state["total_ingested"] += len(batch)
+        self.state["last_ingest_at"] = iso_utc(utc_now())
+        return len(batch)
 
     def save_state(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_path.with_suffix(".tmp")
         payload = {**self.state, "records_in_file": len(self.records)}
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, self.state_path)
+        tmp = self.state_path.with_suffix(".tmp")
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp, self.state_path)
+        except OSError as exc:
+            # State is advisory (records.jsonl is the source of truth); never abort a drain over it.
+            logger.error("could not save ingest state: %s", exc)
 
 
 Fetch = Callable[..., Awaitable[Any]]

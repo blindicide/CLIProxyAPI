@@ -341,6 +341,8 @@ async function refresh(){
       if(a.management.reachable){setLive("ok","live · ingest ok");}
       else{setLive("bad","stale · management API unreachable");banner.push(`Management API unreachable (${a.management.last_error||"no successful poll in the last 30 s"}). Last successful poll ${a.management.last_ok_at?localTs(a.management.last_ok_at):"never"} — figures below may be stale.`);}
       if(a.ingest.last_ingest_at==null)$("ingest-age").textContent="never";
+      if(a.ingest.pending_writes){setLive("bad","disk write failing");banner.push(`${a.ingest.pending_writes} usage record(s) held in memory: writing requests.jsonl failed (${a.ingest.last_write_error||"unknown error"}). They are lost if cproxy-ui restarts before the disk recovers.`);}
+      if(a.ingest.corrupt_lines)banner.push(`${a.ingest.corrupt_lines} corrupt line(s) in requests.jsonl ignored (kept on disk).`);
     }else{
       setLive("bad","dashboard API error");
       banner.push("Analytics API failed: "+(an.reason?an.reason.message:("HTTP "+an.value.status)));
