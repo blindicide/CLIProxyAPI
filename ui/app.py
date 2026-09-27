@@ -182,8 +182,9 @@ def mask_key_usage(payload: Any) -> list[dict[str, Any]]:
         if not isinstance(bucket, dict):
             continue
         for composite, entry in bucket.items():
+            if not isinstance(entry, dict):
+                continue
             base_url, _, key = str(composite).rpartition("|")
-            entry = entry if isinstance(entry, dict) else {}
             rows.append({"provider": provider, "base_url": base_url or None, "key_masked": mask_key(key), "success": entry.get("success"), "failed": entry.get("failed")})
     return rows
 
