@@ -130,6 +130,32 @@ modelled on the agy-proxy `ui/` skin.
   plus `key-N` = position in `api-keys`). It is never written to disk, logs
   or API responses (covered by tests).
 
+### Operator note: usage-queue retention (record-loss window)
+
+cproxy keeps usage-queue records **in memory only** and prunes anything older
+than `redis-usage-queue-retention-seconds` (live value: 60 s, the default;
+cproxy clamps it to a maximum of 3600). cproxy-ui drains the queue every 2 s,
+so in normal operation nothing is lost. Records are lost when:
+
+- cproxy-ui is down (restart, deploy, crash) for longer than the retention
+  window: everything older than the window at drain time is gone for good;
+- cproxy itself restarts: the in-memory queue is dropped regardless of the
+  retention setting.
+
+**Recommendation:** raise `redis-usage-queue-retention-seconds` in
+`config.yaml` (for example to `3600`) at the next planned cproxy maintenance,
+so a cproxy-ui outage of up to an hour loses nothing. Memory cost is small
+(each raw queue record is about 2.8 KB). This is an operator decision: `config.yaml` and
+the `cproxy` unit are live and shared with the Claude Code CLI, so cproxy-ui
+tooling never edits or restarts them. After the change, confirm the value (it
+is read-only here) with:
+
+```bash
+K=$(grep '^CPROXY_MANAGEMENT_KEY=' deploy/cproxy.env | cut -d= -f2-)
+curl -s -H "Authorization: Bearer $K" http://127.0.0.1:31524/v0/management/config \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["redis-usage-queue-retention-seconds"])'
+```
+
 ### Pricing
 
 `ui/pricing.py` — official Anthropic list prices
