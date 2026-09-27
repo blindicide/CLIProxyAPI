@@ -24,10 +24,13 @@ Versions are shown in the dashboard header/footer, `/api/health` and
   read-back-verified archive exist; journaled in-place rewrite with crash
   recovery; any failed check keeps everything and warns. `datastore.py audit`
   proves live ∪ archives == total ingested.
-- All-time totals: `/api/analytics?window=all` carries `lifetime` (live +
-  archived, each record once, costs at current prices), a dashboard card once
-  anything is archived, and `verify_totals.py --lifetime` checks it
-  independently.
+- `window=all` spans the archives: archived records go through the same
+  aggregation as live ones (summary, percentiles, per-day series, every
+  table), each row carries `archived_requests`, a `coverage` block says what
+  the figures span, and the dashboard labels archive rows and the boundary.
+  24h/7d/30d stay live-only (archive threshold floor 31 days). CSV export of
+  `all` streams archived rows first. `verify_totals.py` checks every window
+  over live + archives.
 
 ## 0.2.0 — 2026-09-27 (tag `cproxy-ui-v0.2`)
 

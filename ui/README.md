@@ -18,7 +18,7 @@ server-side and returned by `/api/health` and `/api/analytics`.
 | `pricing.py` | Anthropic list-price table, model id resolution, per-record cost |
 | `analytics.py` | window filtering and aggregation (`aggregate`, `recent`), `DerivedCache` |
 | `export.py` | CSV export rows (`/api/export.csv`) with formula-injection guard |
-| `lifetime.py` | all-time totals over live + archived records (streamed, cached per archive set) |
+| `lifetime.py` | streams archived records into the same `Accumulator` for window=all (cached per archive set) |
 | `archiver.py` | daily verified archiving of records older than 180 days (never deletes; journaled rewrite) |
 | `tools/datastore.py` | backup / verify / merge-restore / archive / status for `requests.jsonl` |
 | `tools/scale_test.py` | scale test on a throwaway instance with a mock management API; memory-guarded (default 2k, max 20k records on this host, `--off-host` for larger runs on a dedicated machine) |
@@ -84,11 +84,11 @@ All JSON. `window` is `24h | 7d | 30d | all` (anything else → 400).
 |---|---|
 | `GET /` (+HEAD) | dashboard HTML (CSP-pinned inline script) |
 | `GET /api/health` (+HEAD) | `status` (`ok`/`degraded`), `service`, `version`, `build_date`, `now`, `now_local`, `uptime_s`, `management`, `ingest`, `pricing` |
-| `GET /api/analytics?window=` | `window`, `window_start`, `generated_at(_local)`, `timezone`, `cost_basis`, `summary`, `per_model`, `per_key`, `per_endpoint`, `per_client_ip`, `per_user_agent`, `per_day`, `lifetime` (window=all only: live + archived totals), `series_granularity` (`hour` for 24h else `day`), `series` (chronological; hour buckets are local time with UTC offset, e.g. `2026-10-25T02:00+01:00`, so the repeated DST hour stays separate), `version`, `management`, `ingest`, `pricing` |
+| `GET /api/analytics?window=` | `window`, `window_start`, `generated_at(_local)`, `timezone`, `cost_basis`, `summary`, `per_model`, `per_key`, `per_endpoint`, `per_client_ip`, `per_user_agent`, `per_day`, `coverage` (what the figures span: `includes_archives`, `live_records`, `archived_records`, `archived_from/until`), `series_granularity` (`hour` for 24h else `day`), `series` (chronological; hour buckets are local time with UTC offset, e.g. `2026-10-25T02:00+01:00`, so the repeated DST hour stays separate), `version`, `management`, `ingest`, `pricing` |
 | `GET /api/pricing` | `source_url`, `as_of`, `currency`, `unit`, `basis`, `formula`, `cache_write_ttl_assumption`, notes, `models` |
 | `GET /api/quota` | `available`, `checked_at(_local)`, `credentials` (5h/7d utilisation as last observed, resets local+UTC, `reset_passed` when that window has reset since, overage, `failed`, `cooldowns`), `has_data`, `client_keys` (masked), `upstream_key_usage`, `quota_providers`; 503 when the management API is down |
 | `GET /api/requests?limit=N` | `total`, `limit`, `requests` (newest first, with `cost_usd`, `cost_quality`, `usage`, `timestamp_local`); `1 ≤ N ≤ 5000` |
-| `GET /api/export.csv?window=` | CSV download (default `all`), one row per request, oldest first: timestamps (UTC + local), model, endpoint, status, token buckets, `cost_usd` (empty when unpriced), `cost_quality`, latency, masked key, client IP, user agent, ids. Cells starting with `= + - @` are prefixed with `'` (spreadsheet formula-injection guard) |
+| `GET /api/export.csv?window=` | CSV download (default `all`, which also streams archived records first, in ingestion order), one row per request, live rows oldest first: timestamps (UTC + local), model, endpoint, status, token buckets, `cost_usd` (empty when unpriced), `cost_quality`, latency, masked key, client IP, user agent, ids. Cells starting with `= + - @` are prefixed with `'` (spreadsheet formula-injection guard) |
 | `GET /api/models` | `available`, `error`, `count`, `models` (served ids joined with price rows), `pricing` |
 
 `ingest` carries `records`, `total_ingested`, `duplicates_skipped`,

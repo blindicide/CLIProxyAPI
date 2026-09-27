@@ -96,13 +96,14 @@ test("a quota window that reset since observation is shown as unknown", () => {
   assert.ok(live.includes("74% used") && live.includes('aria-valuenow="74"') && live.includes("qfill warn"));
 });
 
-test("lifetime card appears only when records were archived", () => {
-  const base = `{window:"all",summary:{requests:2,success:2,failed:0,success_pct:100,failed_pct:0,input_tokens:1,output_tokens:1,cache_read_tokens:0,cache_write_tokens:0,reasoning_tokens:0,estimated_cost_usd:0.5,unpriced_requests:0,unpriced_models:{},avg_latency_ms:1,p50_latency_ms:1,p95_latency_ms:1,avg_ttft_ms:1,ttft_samples:1,stream_requests:1,non_stream_requests:1,requests_per_min:0.1}`;
-  run(`renderCards(${base}})`);
-  assert.ok(!element("cards").innerHTML.includes("Lifetime"));
-  run(`renderCards(${base},lifetime:{requests:5,estimated_cost_usd:1.25,archived_requests:3}})`);
-  const html = element("cards").innerHTML;
-  assert.ok(html.includes("Lifetime") && html.includes("5 · $1.25") && html.includes("incl. 3 archived"), html);
+test("archived rows and coverage are labelled, never silently mixed", () => {
+  assert.equal(run(`archTag({requests:3,archived_requests:0})`), "");
+  assert.ok(run(`archTag({requests:3,archived_requests:3})`).includes(">archive<"));
+  assert.ok(run(`archTag({requests:5,archived_requests:2})`).includes("+2 archived"));
+  assert.ok(run(`coverageText({coverage:{includes_archives:false,archive_after_days:180}})`).startsWith("live history"));
+  assert.ok(run(`coverageText({coverage:{includes_archives:true,archived_records:0,archive_after_days:180}})`).includes("nothing archived yet"));
+  const text = run(`coverageText({coverage:{includes_archives:true,live_records:28,archived_records:40,archived_from:"2026-01-02T10:00:00Z",archived_until:"2026-03-01T10:00:00Z"}})`);
+  assert.ok(text.includes("28 live + 40 archived") && text.includes("02/01/2026"), text);
 });
 
 test("charts announce a data summary", () => {

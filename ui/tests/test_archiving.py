@@ -87,7 +87,9 @@ async def test_archive_moves_only_old_records_and_reports(make_app, mgmt, sample
     archive = health["ingest"]["archive"]
     assert archive["archived_total"] == 2 and archive["archives"] == 1 and archive["last_error"] is None
     assert archive["after_days"] == 180 and health["ingest"]["records"] == 3
-    assert analytics["summary"]["requests"] == 3  # analytics cover the live file only
+    # window=all spans the archive too, and says so.
+    assert analytics["summary"]["requests"] == 5 and analytics["summary"]["archived_requests"] == 2
+    assert analytics["coverage"]["live_records"] == 3 and analytics["coverage"]["archived_records"] == 2
     # A fresh verified backup of the full history was taken first.
     assert datastore.verify(max((tmp_path / "data" / "backups").glob("*.tar.gz")))["records"] == 5
 

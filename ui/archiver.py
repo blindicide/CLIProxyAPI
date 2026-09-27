@@ -32,7 +32,10 @@ from tools import datastore
 
 logger = logging.getLogger("cproxy-ui.archiver")
 
-ARCHIVE_AFTER_DAYS = int(os.getenv("CPROXY_UI_ARCHIVE_AFTER_DAYS", "180"))
+# At least 31 days, so the 24h/7d/30d windows never need archived records (only window=all
+# spans the archives).
+MIN_ARCHIVE_AFTER_DAYS = 31
+ARCHIVE_AFTER_DAYS = max(MIN_ARCHIVE_AFTER_DAYS, int(os.getenv("CPROXY_UI_ARCHIVE_AFTER_DAYS", "180")))
 REWRITE = "requests.jsonl.rewrite"
 REWRITE_OK = REWRITE + ".ok"
 

@@ -332,7 +332,7 @@ def create_app(
     app.state.stopping = asyncio.Event()
     app.state.derived = DerivedCache()
     app.state.analytics_cache = {}
-    app.state.lifetime = lifetime.LifetimeCache(data_dir)
+    app.state.archive_cache = lifetime.ArchiveCache(data_dir)
 
     async def refresh_key_names(app: FastAPI, force: bool = False) -> None:
         if force or time.monotonic() - app.state.key_names_at > KEY_NAMES_TTL_SECONDS:
@@ -479,6 +479,16 @@ def create_app(
             "key_names_error": app.state.key_names_error,
         }
 
+    def coverage(window: str, live_records: int, info: dict[str, Any] | None) -> dict[str, Any]:
+        """What the figures span: window=all includes archived records, other windows are live only
+        (archives only hold records older than ARCHIVE_AFTER_DAYS >= 31 days)."""
+        out = {"includes_archives": window == "all", "live_records": live_records, "archive_after_days": archiver.ARCHIVE_AFTER_DAYS}
+        if info:
+            out.update(info)
+        else:
+            out.update(archived_records=0, archives=len(datastore.archive_files(data_dir)), archived_from=None, archived_until=None)
+        return out
+
     def archive_status() -> dict[str, Any]:
         state = app.state.store.state
         return {
@@ -559,10 +569,11 @@ def create_app(
             result = dict(cached[2])
         else:
             # CPU-bound: run off the event loop so the usage poller keeps draining meanwhile.
-            computed = await run_in_threadpool(aggregate, list(records), window, now, app.state.derived)
+            archived, info = None, None
             if window == "all":
-                archived = await run_in_threadpool(app.state.lifetime.archived, set(app.state.store.ids))
-                computed["lifetime"] = lifetime.combine(computed["summary"], archived)
+                archived, info = await run_in_threadpool(app.state.archive_cache.get, set(app.state.store.ids))
+            computed = await run_in_threadpool(aggregate, list(records), window, now, app.state.derived, archived)
+            computed["coverage"] = coverage(window, len(records), info)
             app.state.analytics_cache[window] = (clock(), len(records), computed)
             result = dict(computed)
         result["version"] = VERSION
@@ -578,8 +589,10 @@ def create_app(
         now = utc_now()
         selected = await run_in_threadpool(filter_window, list(app.state.store.records), window, now, app.state.derived)
         stamp = now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+        # window=all spans the archives too (streamed, oldest first, before the live records).
+        archived = lifetime.iter_archived_records(data_dir, set(app.state.store.ids)) if window == "all" else ()
         return StreamingResponse(
-            iterate_in_threadpool(csv_lines(selected)),
+            iterate_in_threadpool(csv_lines(selected, archived)),
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="cproxy-usage-{window}-{stamp}.csv"'},
         )

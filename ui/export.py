@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 from typing import Any, Iterable, Iterator
 
 from analytics import enrich
@@ -61,8 +62,12 @@ def row(record: dict[str, Any]) -> list[Any]:
     return [safe_cell(values[column]) for column in COLUMNS]
 
 
-def csv_lines(records: Iterable[dict[str, Any]]) -> Iterator[str]:
-    """Header + one line per record, oldest first, as text chunks for a streaming response."""
+def csv_lines(records: Iterable[dict[str, Any]], archived: Iterable[dict[str, Any]] = ()) -> Iterator[str]:
+    """Header + one line per record, oldest first, as text chunks for a streaming response.
+
+    ``archived`` (streamed from data/archive; every archived record is older than the live
+    ones) is written first in archive order - the order records were ingested, which is not
+    strictly by timestamp - without being held in memory. Live records follow, oldest first."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n")
 
@@ -75,7 +80,7 @@ def csv_lines(records: Iterable[dict[str, Any]]) -> Iterator[str]:
     writer.writerow(COLUMNS)
     yield flush()
     ordered = sorted(records, key=lambda r: (str(r.get("timestamp") or ""), str(r.get("ingested_at") or "")))
-    for index, record in enumerate(ordered, start=1):
+    for index, record in enumerate(itertools.chain(archived, ordered), start=1):
         writer.writerow(row(record))
         if index % 500 == 0:
             yield flush()

@@ -305,10 +305,12 @@ and the in-memory records; the timer only makes the nightly backup.
 Conservation check at any time:
 `venv/bin/python tools/datastore.py audit` (live ∪ archives == total ingested).
 
-Archived records leave the dashboard's windows and charts (which cover the live
-file) but not the totals: `/api/analytics?window=all` → `lifetime` adds them
-back (each record once, costs at current prices), shown as a "Lifetime" card;
-`tools/verify_totals.py --lifetime` checks it independently. It grows by about
+Archived records stay in the figures: `window=all` aggregates the archives
+through the same code as live records (summary, per-day series, every table),
+rows built from archives are tagged in the dashboard, and `coverage` in
+`/api/analytics` says what the numbers span. 24h/7d/30d cover the live file only;
+the threshold has a 31-day floor so they never need archived records.
+`tools/verify_totals.py` checks every window over live + archives. It grows by about
 2 KB per request on disk, and cproxy-ui keeps about 3.2 KB per request in memory
 (~0.6 GiB RAM per 200k requests). `/api/health` → `ingest.storage` reports the
 file size, free disk and newest backup, and the dashboard warns when free disk

@@ -1,7 +1,9 @@
 """Aggregation of persisted usage records into dashboard analytics."""
 from __future__ import annotations
 
+import copy
 import heapq
+from array import array
 import math
 import re
 from datetime import datetime, timedelta
@@ -143,13 +145,16 @@ def _new_group(key: str) -> dict[str, Any]:
         "cost_usd": 0.0,
         "priced_requests": 0,
         "unpriced_requests": 0,
+        "archived_requests": 0,
         "_latency_sum": 0.0,
         "_latency_n": 0,
     }
 
 
-def _add(group: dict[str, Any], d: Derived) -> None:
+def _add(group: dict[str, Any], d: Derived, archived: bool = False) -> None:
     group["requests"] += 1
+    if archived:
+        group["archived_requests"] += 1
     if d.failed:
         group["failed"] += 1
     else:
@@ -205,112 +210,128 @@ def recent(records: list[dict[str, Any]], limit: int = 100) -> list[dict[str, An
     return [enrich(record) for record in newest]
 
 
-def aggregate(records: list[dict[str, Any]], window: str = "24h", now: datetime | None = None, cache: DerivedCache | None = None) -> dict[str, Any]:
+class Accumulator:
+    """Running aggregation state. Archived records (streamed from data/archive) and live records
+    go through the same add(), so window=all covers the whole history with one code path; the
+    archive-only state is built once per archive set and copied for each request."""
+
+    def __init__(self, hourly: bool = False) -> None:
+        self.hourly = hourly
+        self.groups: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in ("model", "key", "endpoint", "ip", "ua", "day", "series")}
+        self.key_masks: dict[str, str | None] = {}
+        self.total = _new_group("total")
+        self.latencies = array("d")
+        self.ttfts = array("d")
+        self.stream = self.non_stream = 0
+        self.cost_quality: dict[str, int] = {}
+        self.unpriced_models: dict[str, int] = {}
+        self.status_codes: dict[str, int] = {}
+        self.first_ts: datetime | None = None
+
+    def copy(self) -> "Accumulator":
+        return copy.deepcopy(self)
+
+    def add(self, d: Derived, archived: bool = False) -> None:
+        ts = d.ts
+        if ts and (self.first_ts is None or ts < self.first_ts):
+            self.first_ts = ts
+        _add(self.total, d, archived)
+        g = self.groups
+        self.key_masks[d.key_name] = d.key_masked
+        keyed = [("model", d.model), ("key", d.key_name), ("endpoint", d.endpoint), ("ip", d.ip), ("ua", d.ua)]
+        if ts:
+            keyed += [("day", d.day), ("series", d.hour if self.hourly else d.day)]
+        for name, key in keyed:
+            group = g[name].get(key)
+            if group is None:
+                group = g[name][key] = _new_group(key)
+            _add(group, d, archived)
+        if d.latency is not None:
+            self.latencies.append(d.latency)
+        if d.ttft:
+            self.ttfts.append(d.ttft)
+        if d.stream:
+            self.stream += 1
+        else:
+            self.non_stream += 1
+        self.cost_quality[d.cost_quality] = self.cost_quality.get(d.cost_quality, 0) + 1
+        if d.cost_usd is None:
+            self.unpriced_models[d.model] = self.unpriced_models.get(d.model, 0) + 1
+        self.status_codes[d.status] = self.status_codes.get(d.status, 0) + 1
+
+    def result(self, window: str, now: datetime) -> dict[str, Any]:
+        total, g, hourly = self.total, self.groups, self.hourly
+        latencies, ttfts, first_ts = self.latencies, self.ttfts, self.first_ts
+        requests = total["requests"]
+        span = WINDOWS[window]
+        if span is not None:
+            minutes = span.total_seconds() / 60
+        elif first_ts is not None:
+            minutes = max(1.0, (now - first_ts).total_seconds() / 60)
+        else:
+            minutes = 0.0
+        summary = {
+            "requests": requests,
+            "success": total["success"],
+            "failed": total["failed"],
+            "success_pct": round(100 * total["success"] / requests, 2) if requests else None,
+            "failed_pct": round(100 * total["failed"] / requests, 2) if requests else None,
+            "input_tokens": total["input_tokens"],
+            "output_tokens": total["output_tokens"],
+            "cache_read_tokens": total["cache_read_tokens"],
+            "cache_write_tokens": total["cache_write_tokens"],
+            "reasoning_tokens": total["reasoning_tokens"],
+            "estimated_cost_usd": round(total["cost_usd"], 8) if total["priced_requests"] else (0.0 if requests == 0 else None),
+            "priced_requests": total["priced_requests"],
+            "unpriced_requests": total["unpriced_requests"],
+            "archived_requests": total["archived_requests"],
+            "unpriced_models": self.unpriced_models,
+            "cost_quality": self.cost_quality,
+            "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else None,
+            "p50_latency_ms": percentile(latencies, 50),
+            "p95_latency_ms": percentile(latencies, 95),
+            "avg_ttft_ms": round(sum(ttfts) / len(ttfts), 1) if ttfts else None,
+            "ttft_samples": len(ttfts),
+            "stream_requests": self.stream,
+            "non_stream_requests": self.non_stream,
+            "requests_per_min": round(requests / minutes, 4) if minutes else None,
+            "window_minutes": round(minutes, 2),
+            "status_codes": self.status_codes,
+        }
+        per_key_rows = _finish(g["key"], requests, "key_name")
+        for row in per_key_rows:
+            row["key_masked"] = self.key_masks.get(row["key_name"])
+        return {
+            "window": window,
+            "generated_at": iso_utc(now),
+            "generated_at_local": local_iso(now),
+            "window_start": iso_utc(now - span) if span else (iso_utc(first_ts) if first_ts else None),
+            "timezone": "Europe/Amsterdam",
+            "cost_basis": "list-price equivalent, not billed",
+            "summary": summary,
+            "per_model": _finish(g["model"], requests, "model"),
+            "per_key": per_key_rows,
+            "per_endpoint": _finish(g["endpoint"], requests, "endpoint"),
+            "per_client_ip": _finish(g["ip"], requests, "client_ip"),
+            "per_user_agent": _finish(g["ua"], requests, "user_agent"),
+            "per_day": sorted(_finish(g["day"], requests, "day"), key=lambda row: row["day"]),
+            "series_granularity": "hour" if hourly else "day",
+            # Chronological, not lexical: on a DST fall-back day "02:00+02:00" precedes "02:00+01:00".
+            "series": sorted(_finish(g["series"], requests, "bucket"), key=lambda row: datetime.fromisoformat(row["bucket"]) if hourly else row["bucket"]),
+        }
+
+
+def aggregate(
+    records: list[dict[str, Any]],
+    window: str = "24h",
+    now: datetime | None = None,
+    cache: DerivedCache | None = None,
+    archived: Accumulator | None = None,
+) -> dict[str, Any]:
+    """Aggregate live records for a window; for window="all", on top of the archived state."""
     now = now or utc_now()
     selected = _select(_derive(records, cache), window, now)
-    per_model: dict[str, dict[str, Any]] = {}
-    per_key: dict[str, dict[str, Any]] = {}
-    per_endpoint: dict[str, dict[str, Any]] = {}
-    per_ip: dict[str, dict[str, Any]] = {}
-    per_ua: dict[str, dict[str, Any]] = {}
-    per_day: dict[str, dict[str, Any]] = {}
-    series: dict[str, dict[str, Any]] = {}
-    key_masks: dict[str, str | None] = {}
-    total = _new_group("total")
-    latencies: list[float] = []
-    ttfts: list[float] = []
-    stream = non_stream = 0
-    cost_quality: dict[str, int] = {}
-    unpriced_models: dict[str, int] = {}
-    status_codes: dict[str, int] = {}
-    first_ts: datetime | None = None
-    hourly = window == "24h"
-
+    acc = archived.copy() if archived is not None and window == "all" else Accumulator(hourly=window == "24h")
     for _record, d in selected:
-        ts = d.ts
-        if ts and (first_ts is None or ts < first_ts):
-            first_ts = ts
-        _add(total, d)
-        model = d.model
-        key_masks[d.key_name] = d.key_masked
-        for groups, key in ((per_model, model), (per_key, d.key_name), (per_endpoint, d.endpoint), (per_ip, d.ip), (per_ua, d.ua)):
-            group = groups.get(key)
-            if group is None:
-                group = groups[key] = _new_group(key)
-            _add(group, d)
-        if ts:
-            for groups, key in ((per_day, d.day), (series, d.hour if hourly else d.day)):
-                group = groups.get(key)
-                if group is None:
-                    group = groups[key] = _new_group(key)
-                _add(group, d)
-        if d.latency is not None:
-            latencies.append(d.latency)
-        if d.ttft:
-            ttfts.append(d.ttft)
-        if d.stream:
-            stream += 1
-        else:
-            non_stream += 1
-        quality = d.cost_quality
-        cost_quality[quality] = cost_quality.get(quality, 0) + 1
-        if d.cost_usd is None:
-            unpriced_models[model] = unpriced_models.get(model, 0) + 1
-        status_codes[d.status] = status_codes.get(d.status, 0) + 1
-
-    requests = total["requests"]
-    span = WINDOWS[window]
-    if span is not None:
-        minutes = span.total_seconds() / 60
-    elif first_ts is not None:
-        minutes = max(1.0, (now - first_ts).total_seconds() / 60)
-    else:
-        minutes = 0.0
-    summary = {
-        "requests": requests,
-        "success": total["success"],
-        "failed": total["failed"],
-        "success_pct": round(100 * total["success"] / requests, 2) if requests else None,
-        "failed_pct": round(100 * total["failed"] / requests, 2) if requests else None,
-        "input_tokens": total["input_tokens"],
-        "output_tokens": total["output_tokens"],
-        "cache_read_tokens": total["cache_read_tokens"],
-        "cache_write_tokens": total["cache_write_tokens"],
-        "reasoning_tokens": total["reasoning_tokens"],
-        "estimated_cost_usd": round(total["cost_usd"], 8) if total["priced_requests"] else (0.0 if requests == 0 else None),
-        "priced_requests": total["priced_requests"],
-        "unpriced_requests": total["unpriced_requests"],
-        "unpriced_models": unpriced_models,
-        "cost_quality": cost_quality,
-        "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else None,
-        "p50_latency_ms": percentile(latencies, 50),
-        "p95_latency_ms": percentile(latencies, 95),
-        "avg_ttft_ms": round(sum(ttfts) / len(ttfts), 1) if ttfts else None,
-        "ttft_samples": len(ttfts),
-        "stream_requests": stream,
-        "non_stream_requests": non_stream,
-        "requests_per_min": round(requests / minutes, 4) if minutes else None,
-        "window_minutes": round(minutes, 2),
-        "status_codes": status_codes,
-    }
-    per_key_rows = _finish(per_key, requests, "key_name")
-    for row in per_key_rows:
-        row["key_masked"] = key_masks.get(row["key_name"])
-    return {
-        "window": window,
-        "generated_at": iso_utc(now),
-        "generated_at_local": local_iso(now),
-        "window_start": iso_utc(now - span) if span else (iso_utc(first_ts) if first_ts else None),
-        "timezone": "Europe/Amsterdam",
-        "cost_basis": "list-price equivalent, not billed",
-        "summary": summary,
-        "per_model": _finish(per_model, requests, "model"),
-        "per_key": per_key_rows,
-        "per_endpoint": _finish(per_endpoint, requests, "endpoint"),
-        "per_client_ip": _finish(per_ip, requests, "client_ip"),
-        "per_user_agent": _finish(per_ua, requests, "user_agent"),
-        "per_day": sorted(_finish(per_day, requests, "day"), key=lambda row: row["day"]),
-        "series_granularity": "hour" if hourly else "day",
-        # Chronological, not lexical: on a DST fall-back day "02:00+02:00" precedes "02:00+01:00".
-        "series": sorted(_finish(series, requests, "bucket"), key=lambda row: datetime.fromisoformat(row["bucket"]) if hourly else row["bucket"]),
-    }
+        acc.add(d)
+    return acc.result(window, now)

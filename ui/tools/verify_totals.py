@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independently recompute cproxy-ui totals from requests.jsonl and compare with /api/analytics.
+"""Independently recompute cproxy-ui totals from requests.jsonl + data/archive and compare with /api/analytics.
 
 Deliberately imports nothing from the app: the price table below is a second, hand-copied
 encoding of the official Anthropic list prices (mandate section 4, as of 2026-09-27) and the
@@ -187,22 +187,6 @@ def load_lifetime(live_path):
     return records
 
 
-def compare_lifetime(analytics, records):
-    """Mismatches between the API's lifetime block and a recomputation over live + archives."""
-    life = analytics.get("lifetime")
-    if life is None:
-        return None, [("lifetime", "block expected for window=all", None)]
-    now = parse_time(analytics["generated_at"])
-    visible = [r for r in records if (parse_time(r.get("ingested_at")) or now) <= now]
-    mine, _ = recompute(visible, "all", now)
-    problems = [(f"lifetime.{f}", mine[f], life[f]) for f in ("requests", "success", "failed", "input_tokens", "output_tokens",
-                "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "priced_requests", "unpriced_requests") if mine[f] != life[f]]
-    reported = life["estimated_cost_usd"]
-    if mine["priced_requests"] and (reported is None or abs(mine["cost"] - reported) > COST_TOLERANCE):
-        problems.append(("lifetime.estimated_cost_usd", round(mine["cost"], 8), reported))
-    return mine, problems
-
-
 def fetch(url):
     with urllib.request.urlopen(url, timeout=30) as response:  # local tool, not a relay path
         return json.loads(response.read().decode("utf-8"))
@@ -215,14 +199,16 @@ def main(argv=None):
     parser.add_argument("--file", default=str(here / "requests.jsonl"), help="path to requests.jsonl")
     parser.add_argument("--window", choices=[*WINDOWS, "every"], default="every")
     parser.add_argument("--json", action="store_true", help="print a JSON report")
-    parser.add_argument("--lifetime", action="store_true", help="also check the all-time totals (live + data/archive)")
     args = parser.parse_args(argv)
     windows = list(WINDOWS) if args.window == "every" else [args.window]
     report, failed = [], False
     for window in windows:
         try:
             analytics = fetch(f"{args.url.rstrip('/')}/api/analytics?window={window}")
-            records = load(args.file)  # read after the API answered, so nothing it saw is missing
+            # Live file + archives (read after the API answered, so nothing it saw is missing).
+            # Archives only hold records older than the 24h/7d/30d windows, so filtering by
+            # timestamp gives the same sets the app uses; window=all spans both.
+            records = load_lifetime(args.file)
         except (OSError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -230,18 +216,6 @@ def main(argv=None):
         failed |= bool(problems)
         report.append({"window": window, "generated_at": analytics["generated_at"], "requests": mine["requests"],
                        "cost_usd": round(mine["cost"], 8), "match": not problems,
-                       "mismatches": [{"field": f, "recomputed": a, "api": b} for f, a, b in problems]})
-    if args.lifetime:
-        try:
-            analytics = fetch(f"{args.url.rstrip('/')}/api/analytics?window=all")
-            records = load_lifetime(args.file)
-        except (OSError, ValueError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
-        mine, problems = compare_lifetime(analytics, records)
-        failed |= bool(problems)
-        report.append({"window": "lifetime", "generated_at": analytics["generated_at"], "requests": mine["requests"] if mine else None,
-                       "cost_usd": round(mine["cost"], 8) if mine else None, "match": not problems,
                        "mismatches": [{"field": f, "recomputed": a, "api": b} for f, a, b in problems]})
     if args.json:
         print(json.dumps({"ok": not failed, "windows": report}, indent=2))
