@@ -149,3 +149,61 @@ async def test_health_reports_storage_and_backup_freshness(make_app, api_client,
     assert storage["backups"] == 1 and storage["newest_backup_age_s"] < 120
     assert storage["requests_file_bytes"] > 0
     assert not any("backup" in w for w in storage["warnings"])
+
+
+def test_backup_is_consistent_while_the_file_grows(tmp_path, sample, monkeypatch):
+    records = _records(sample, 4)
+    _write(tmp_path, records)
+    real = ds.complete_length
+    late = _records(sample, 2, prefix="late")
+
+    def length_then_append(path):
+        n = real(path)
+        with open(path, "a") as handle:  # the service appends right after the snapshot point
+            handle.write("".join(json.dumps(r) + "\n" for r in late))
+        return n
+
+    monkeypatch.setattr(ds, "complete_length", length_then_append)
+    result = ds.backup(tmp_path)
+    assert result["verified"] and result["records"] == 4
+    _, data = ds.read_backup(Path(result["backup"]))
+    assert sorted(ds.record_ids(data)) == sorted(r["id"] for r in records)
+
+
+def test_restore_onto_a_torn_live_tail(tmp_path, sample):
+    records = _records(sample, 3)
+    _write(tmp_path, records)
+    backup_path = Path(ds.backup(tmp_path)["backup"])
+    _write(tmp_path, records[:1], tail='{"id":"torn"')
+    result = ds.restore(tmp_path, backup_path, check_service=False)
+    assert result["records_added"] == 2
+    lines = (tmp_path / "requests.jsonl").read_text().splitlines()
+    assert lines[1] == '{"id":"torn"'  # fragment isolated on its own line, never glued
+    assert sorted(_ids(tmp_path)) == sorted(r["id"] for r in records)
+
+
+def test_complete_length_across_chunks(tmp_path, monkeypatch):
+    monkeypatch.setattr(ds, "CHUNK", 8)
+    path = tmp_path / "f"
+    path.write_bytes(b"first line\nsecond line\npartial")
+    assert ds.complete_length(path) == len(b"first line\nsecond line\n")
+    path.write_bytes(b"no newline at all")
+    assert ds.complete_length(path) == 0
+    assert ds.complete_length(tmp_path / "missing") == 0
+
+
+def test_backup_memory_is_independent_of_file_size(tmp_path, sample):
+    import gc
+    import tracemalloc
+
+    _write(tmp_path, _records(sample, 3000))
+    size = (tmp_path / "requests.jsonl").stat().st_size
+    gc.collect()
+    tracemalloc.start()
+    try:
+        result = ds.backup(tmp_path, keep=0)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert result["verified"] and result["records"] == 3000
+    assert peak < size / 4, f"backup peak {peak} B for a {size} B file"

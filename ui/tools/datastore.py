@@ -26,6 +26,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -42,22 +43,95 @@ def now_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+# Everything below streams: memory stays at one line plus a set of record ids, whatever the
+# size of the history (reading files whole is what made the 2026-09-27 scale test OOM).
+CHUNK = 1 << 20
+
+
 def complete_lines(data: bytes) -> bytes:
     """Everything up to the last newline: a line still being appended is left out."""
     cut = data.rfind(b"\n")
     return data[: cut + 1] if cut >= 0 else b""
 
 
+def complete_length(path: Path) -> int:
+    """Byte length of the file up to and including its last newline (read from the end)."""
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return 0
+    with open(path, "rb") as handle:
+        position = size
+        while position > 0:
+            start = max(0, position - CHUNK)
+            handle.seek(start)
+            cut = handle.read(position - start).rfind(b"\n")
+            if cut >= 0:
+                return start + cut + 1
+            position = start
+    return 0
+
+
+def _line_id(line: bytes) -> str | None:
+    try:
+        record = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return record.get("id") if isinstance(record, dict) and record.get("id") else None
+
+
+def iter_lines(handle, limit: int | None = None):
+    """Yield lines (bytes) from a binary file object, stopping after ``limit`` bytes."""
+    remaining = limit
+    while remaining is None or remaining > 0:
+        line = handle.readline() if remaining is None else handle.readline(remaining)
+        if not line:
+            return
+        if remaining is not None:
+            remaining -= len(line)
+        yield line
+
+
+def scan(handle, limit: int | None = None) -> tuple[str, set, int]:
+    """(sha256 of the bytes, set of record ids, lines carrying an id) in one streaming pass."""
+    digest, ids, lines = hashlib.sha256(), set(), 0
+    for line in iter_lines(handle, limit):
+        digest.update(line)
+        rid = _line_id(line)
+        if rid:
+            ids.add(rid)
+            lines += 1
+    return digest.hexdigest(), ids, lines
+
+
 def record_ids(data: bytes) -> list[str]:
-    ids = []
-    for line in data.decode("utf-8", errors="replace").splitlines():
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict) and record.get("id"):
-            ids.append(record["id"])
-    return ids
+    """Ids in an in-memory buffer (small inputs and tests)."""
+    return [rid for rid in (_line_id(line) for line in data.splitlines()) if rid]
+
+
+class _Limited(io.RawIOBase):
+    """Read-only view of the first ``size`` bytes of a file (for tarfile.addfile)."""
+
+    def __init__(self, handle, size: int) -> None:
+        self.handle, self.left = handle, size
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        n = min(len(buffer), self.left)
+        if n <= 0:
+            return 0
+        chunk = self.handle.read(n)
+        buffer[: len(chunk)] = chunk
+        self.left -= len(chunk)
+        return len(chunk)
+
+
+def _fsync(path: Path) -> None:
+    with open(path, "rb+") as handle:
+        os.fsync(handle.fileno())
+    os.chmod(path, 0o600)
 
 
 def fsync_write(path: Path, data: bytes) -> None:
@@ -77,29 +151,44 @@ def service_active(unit: str = "cproxy-ui") -> bool:
     return result.returncode == 0
 
 
+def _tar_add(tar: tarfile.TarFile, name: str, size: int, fileobj) -> None:
+    info = tarfile.TarInfo(name)
+    info.size, info.mtime, info.mode = size, int(time.time()), 0o600
+    tar.addfile(info, fileobj)
+
+
 def backup(ui: Path, keep: int = DEFAULT_KEEP) -> dict:
     live = ui / "requests.jsonl"
-    data = complete_lines(live.read_bytes()) if live.exists() else b""
+    # Fix the snapshot length first: the file is append-only, so bytes [0, length) never change
+    # while the service keeps writing after them.
+    length = complete_length(live)
+    if length:
+        with open(live, "rb") as handle:
+            sha, ids, lines = scan(handle, length)
+    else:
+        sha, ids, lines = hashlib.sha256(b"").hexdigest(), set(), 0
     state_path = ui / "data" / "ingest_state.json"
     state = state_path.read_bytes() if state_path.exists() else b"{}\n"
-    ids = record_ids(data)
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "records": len(set(ids)),
-        "lines": len(ids),
-        "requests_sha256": hashlib.sha256(data).hexdigest(),
-        "requests_bytes": len(data),
+        "records": len(ids),
+        "lines": lines,
+        "requests_sha256": sha,
+        "requests_bytes": length,
     }
     target = ui / "data" / "backups" / f"{BACKUP_PREFIX}{now_stamp()}.tar.gz"
     target.parent.mkdir(parents=True, exist_ok=True)
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for name, payload in (("requests.jsonl", data), ("ingest_state.json", state), ("MANIFEST.json", json.dumps(manifest, indent=2).encode())):
-            info = tarfile.TarInfo(name)
-            info.size, info.mtime, info.mode = len(payload), int(time.time()), 0o600
-            tar.addfile(info, io.BytesIO(payload))
     tmp = target.with_suffix(".tmp")
-    fsync_write(tmp, buffer.getvalue())
+    with tarfile.open(tmp, mode="w:gz") as tar:
+        if length:
+            with open(live, "rb") as handle:
+                _tar_add(tar, "requests.jsonl", length, _Limited(handle, length))
+        else:
+            _tar_add(tar, "requests.jsonl", 0, io.BytesIO(b""))
+        _tar_add(tar, "ingest_state.json", len(state), io.BytesIO(state))
+        payload = json.dumps(manifest, indent=2).encode()
+        _tar_add(tar, "MANIFEST.json", len(payload), io.BytesIO(payload))
+    _fsync(tmp)
     os.replace(tmp, target)
     verified = verify(target)
     pruned = prune(target.parent, keep)
@@ -107,21 +196,29 @@ def backup(ui: Path, keep: int = DEFAULT_KEEP) -> dict:
 
 
 def read_backup(path: Path) -> tuple[dict, bytes]:
+    """Manifest and full requests.jsonl of a backup, in memory (small backups and tests only)."""
     with tarfile.open(path, mode="r:gz") as tar:
         manifest = json.loads(tar.extractfile("MANIFEST.json").read())
         data = tar.extractfile("requests.jsonl").read()
     return manifest, data
 
 
+def _scan_backup(path: Path) -> tuple[dict, str, set]:
+    with tarfile.open(path, mode="r:gz") as tar:
+        manifest = json.loads(tar.extractfile("MANIFEST.json").read())
+        sha, ids, _ = scan(tar.extractfile("requests.jsonl"))
+    return manifest, sha, ids
+
+
 def verify(path: Path) -> dict:
     try:
-        manifest, data = read_backup(path)
+        manifest, sha, ids = _scan_backup(path)
     except (OSError, KeyError, tarfile.TarError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": f"unreadable backup: {exc}"}
     problems = []
-    if hashlib.sha256(data).hexdigest() != manifest["requests_sha256"]:
+    if sha != manifest["requests_sha256"]:
         problems.append("requests.jsonl checksum does not match the manifest")
-    if len(set(record_ids(data))) != manifest["records"]:
+    if len(ids) != manifest["records"]:
         problems.append("record count does not match the manifest")
     return {"ok": not problems, "records": manifest["records"], "created_at": manifest["created_at"], "problems": problems}
 
@@ -139,16 +236,21 @@ def _require_stopped(check_service: bool) -> None:
         raise SystemExit("refusing: cproxy-ui is running. Stop it first (sudo systemctl stop cproxy-ui), then start it right after.")
 
 
-def _replace_live(ui: Path, new_data: bytes, label: str) -> Path:
-    """Swap in new_data, keeping the previous file as requests.jsonl.<label>-<stamp>."""
+def _replace_live(ui: Path, tmp: Path, label: str) -> Path:
+    """Swap the fsync'd ``tmp`` in, keeping the previous file as requests.jsonl.<label>-<stamp>."""
     live = ui / "requests.jsonl"
     keep = ui / f"requests.jsonl.{label}-{now_stamp()}"
-    tmp = ui / "requests.jsonl.tmp"
-    fsync_write(tmp, new_data)
     if live.exists():
         os.link(live, keep)  # the previous file stays reachable under its new name
     os.replace(tmp, live)
     return keep
+
+
+def _ids_of(path: Path) -> set:
+    if not path.exists():
+        return set()
+    with open(path, "rb") as handle:
+        return scan(handle)[1]
 
 
 def restore(ui: Path, backup_path: Path, check_service: bool = True) -> dict:
@@ -156,56 +258,88 @@ def restore(ui: Path, backup_path: Path, check_service: bool = True) -> dict:
     result = verify(backup_path)
     if not result["ok"]:
         raise SystemExit(f"refusing: backup does not verify: {result}")
-    _, backup_data = read_backup(backup_path)
     live = ui / "requests.jsonl"
-    live_data = live.read_bytes() if live.exists() else b""
-    if live_data and not live_data.endswith(b"\n"):
-        live_data += b"\n"
-    live_ids = set(record_ids(live_data))
-    added = []
-    for line in backup_data.decode("utf-8").splitlines(keepends=True):
-        try:
-            rid = json.loads(line).get("id")
-        except (json.JSONDecodeError, AttributeError):
-            continue
-        if rid and rid not in live_ids:
-            live_ids.add(rid)
-            added.append(line.encode("utf-8"))
-    merged = live_data + b"".join(added)
-    expected = set(record_ids(live_data)) | set(record_ids(backup_data))
-    if set(record_ids(merged)) != expected:
+    live_ids = _ids_of(live)
+    tmp = ui / "requests.jsonl.tmp"
+    added = 0
+    backup_ids = set()
+    with open(tmp, "wb") as out:
+        if live.exists():
+            with open(live, "rb") as handle:
+                shutil.copyfileobj(handle, out, CHUNK)
+            if live.stat().st_size and complete_length(live) != live.stat().st_size:
+                out.write(b"\n")  # never glue a restored line onto a torn tail
+        seen = set(live_ids)
+        with tarfile.open(backup_path, mode="r:gz") as tar:
+            for line in iter_lines(tar.extractfile("requests.jsonl")):
+                rid = _line_id(line)
+                if not rid:
+                    continue
+                backup_ids.add(rid)
+                if rid not in seen:
+                    seen.add(rid)
+                    out.write(line if line.endswith(b"\n") else line + b"\n")
+                    added += 1
+        out.flush()
+        os.fsync(out.fileno())
+    if added == 0:
+        tmp.unlink()
+        return {"restored_from": str(backup_path), "records_before": len(live_ids), "records_added": 0,
+                "records_after": len(live_ids), "previous_file": None}
+    if _ids_of(tmp) != live_ids | backup_ids:
+        tmp.unlink()
         raise SystemExit("refusing: merged file does not contain exactly live + backup records")
-    kept = _replace_live(ui, merged, "pre-restore") if added else None
-    return {"restored_from": str(backup_path), "records_before": len(set(record_ids(live_data))), "records_added": len(added),
-            "records_after": len(expected), "previous_file": str(kept) if kept else None}
+    os.chmod(tmp, 0o600)
+    kept = _replace_live(ui, tmp, "pre-restore")
+    return {"restored_from": str(backup_path), "records_before": len(live_ids), "records_added": added,
+            "records_after": len(live_ids | backup_ids), "previous_file": str(kept)}
 
 
 def archive(ui: Path, before: str, check_service: bool = True) -> dict:
     _require_stopped(check_service)
     cutoff = datetime.fromisoformat(before).replace(tzinfo=timezone.utc) if "T" not in before else datetime.fromisoformat(before.replace("Z", "+00:00"))
     live = ui / "requests.jsonl"
-    data = live.read_bytes()
-    keep_lines, old_lines = [], []
-    for line in data.decode("utf-8", errors="replace").splitlines(keepends=True):
-        if not line.endswith("\n"):
-            line += "\n"
-        try:
-            ts = json.loads(line).get("timestamp")
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00")) if isinstance(ts, str) else None
-        except (json.JSONDecodeError, AttributeError, ValueError):
-            dt = None
-        (old_lines if dt is not None and dt < cutoff else keep_lines).append(line)
-    if not old_lines:
-        return {"archived": 0, "remaining": len(keep_lines), "archive": None, "previous_file": None}
-    old_data, new_data = "".join(old_lines).encode(), "".join(keep_lines).encode()
-    if set(record_ids(old_data)) | set(record_ids(new_data)) != set(record_ids(data)) or set(record_ids(old_data)) & set(record_ids(new_data)):
-        raise SystemExit("refusing: archive split does not partition the records")
     target = ui / "data" / "archive" / f"requests-before-{cutoff:%Y%m%d}-{now_stamp()}.jsonl.gz"
-    fsync_write(target, gzip.compress(old_data))
-    if gzip.decompress(target.read_bytes()) != old_data:
-        raise SystemExit("refusing: archive read-back mismatch")
-    kept = _replace_live(ui, new_data, "pre-archive")
-    return {"archived": len(set(record_ids(old_data))), "remaining": len(set(record_ids(new_data))), "archive": str(target), "previous_file": str(kept)}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    gz_tmp, live_tmp = target.with_suffix(".tmp"), ui / "requests.jsonl.tmp"
+    old_ids, keep_ids, all_ids = set(), set(), set()
+    with open(live, "rb") as handle, gzip.open(gz_tmp, "wb") as old_out, open(live_tmp, "wb") as keep_out:
+        for line in iter_lines(handle):
+            if not line.endswith(b"\n"):
+                line += b"\n"
+            rid = _line_id(line)
+            dt = None
+            if rid:
+                all_ids.add(rid)
+                try:
+                    ts = json.loads(line).get("timestamp")
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00")) if isinstance(ts, str) else None
+                except (ValueError, AttributeError):
+                    dt = None
+            if dt is not None and dt < cutoff:
+                old_out.write(line)
+                old_ids.add(rid)
+            else:
+                keep_out.write(line)  # recent, id-less and unparseable lines always stay
+                if rid:
+                    keep_ids.add(rid)
+        keep_out.flush()
+        os.fsync(keep_out.fileno())
+    if not old_ids:
+        gz_tmp.unlink()
+        live_tmp.unlink()
+        return {"archived": 0, "remaining": len(keep_ids), "archive": None, "previous_file": None}
+    _fsync(gz_tmp)
+    with gzip.open(gz_tmp, "rb") as handle:
+        archived_back = scan(handle)[1]
+    if archived_back != old_ids or _ids_of(live_tmp) != keep_ids or old_ids | keep_ids != all_ids or old_ids & keep_ids:
+        gz_tmp.unlink()
+        live_tmp.unlink()
+        raise SystemExit("refusing: archive split does not partition the records")
+    os.replace(gz_tmp, target)
+    os.chmod(live_tmp, 0o600)
+    kept = _replace_live(ui, live_tmp, "pre-archive")
+    return {"archived": len(old_ids), "remaining": len(keep_ids), "archive": str(target), "previous_file": str(kept)}
 
 
 def status(ui: Path) -> dict:
@@ -214,7 +348,7 @@ def status(ui: Path) -> dict:
     disk = os.statvfs(ui)
     return {
         "requests_bytes": live.stat().st_size if live.exists() else 0,
-        "records": len(set(record_ids(live.read_bytes()))) if live.exists() else 0,
+        "records": len(_ids_of(live)),
         "backups": len(backups),
         "newest_backup": backups[-1].name if backups else None,
         "disk_free_bytes": disk.f_bavail * disk.f_frsize,

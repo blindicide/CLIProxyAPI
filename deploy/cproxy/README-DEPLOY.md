@@ -121,6 +121,15 @@ the process (the EnvironmentFile is read by systemd before the sandbox applies).
 No capabilities, seccomp `@system-service`, IP traffic limited to localhost,
 `UMask=0077`.
 
+Memory caps (the host is shared; a runaway process must never make the kernel
+OOM-kill someone else's): `cproxy-ui` has `MemoryHigh=600M` / `MemoryMax=900M`
+and the backup unit `MemoryMax=256M`, no swap. All records live in memory
+(~3.3 KB each at load, ~4.3 KB under query load, so ~190k records fit under the
+cap). `/api/health` → `ingest.storage.memory` shows RSS against the limit and
+the dashboard warns at 70%; that is the moment to run
+`tools/datastore.py archive`. Past the cap, only cproxy-ui is killed and
+restarted.
+
 Consequences for operators:
 - after editing the template, reinstall it:
   `sudo install -m 644 deploy/cproxy-ui/cproxy-ui.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart cproxy-ui`;

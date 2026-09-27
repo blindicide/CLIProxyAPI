@@ -10,6 +10,10 @@ WorkingDirectory=/home/clawuser/projects/cproxy/ui
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/home/clawuser/projects/cproxy/ui/venv/bin/python /home/clawuser/projects/cproxy/ui/tools/datastore.py backup --keep 30
 
+# Streams the history; needs a few MiB whatever its size.
+MemoryMax=256M
+MemorySwapMax=0
+
 # --- sandbox: reads ui/, writes only ui/data/ (backups), no network --------------------------
 ProtectHome=tmpfs
 BindReadOnlyPaths=/home/clawuser/projects/cproxy/ui

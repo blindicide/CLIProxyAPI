@@ -68,3 +68,10 @@ def test_backup_unit_is_sandboxed_and_offline():
 def test_backup_timer_is_daily_and_catches_up():
     d = _unit("cproxy-ui-backup.timer")
     assert d["OnCalendar"] == ["*-*-* 03:17:00"] and d["Persistent"] == ["true"]
+
+
+def test_units_cap_their_own_memory():
+    service, backup = directives(), _unit("cproxy-ui-backup.service")
+    assert service["MemoryHigh"] == ["600M"] and service["MemoryMax"] == ["900M"]
+    assert backup["MemoryMax"] == ["256M"]
+    assert service["MemorySwapMax"] == ["0"] and backup["MemorySwapMax"] == ["0"]

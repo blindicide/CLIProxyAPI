@@ -19,6 +19,14 @@ RestartSec=3
 StandardOutput=journal
 StandardError=journal
 
+# --- memory -------------------------------------------------------------------------------
+# All records live in memory (~3.3 KB each, ~4.3 KB under query load). If the history ever
+# outgrows this, only this unit is throttled/killed - never other processes on the shared host.
+# /api/health warns at 70% of MemoryHigh; archive old history before that (tools/datastore.py).
+MemoryHigh=600M
+MemoryMax=900M
+MemorySwapMax=0
+
 # --- sandbox -------------------------------------------------------------------------------
 # /home is an empty tmpfs: auths/, config.yaml, deploy/*.env, ~/.claude and every other
 # project are invisible. Only ui/ comes back, read-only, plus the two paths it writes.

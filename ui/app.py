@@ -41,6 +41,8 @@ SHUTDOWN_GRACE_SECONDS = 15.0
 DISK_FREE_WARN_BYTES = 2 * 1024**3
 BACKUP_STALE_SECONDS = 48 * 3600
 BACKUP_PREFIX = "cproxy-ui-backup-"
+# Warn when the service uses this share of its cgroup memory limit (MemoryHigh, else MemoryMax).
+MEMORY_WARN_FRACTION = 0.7
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("cproxy-ui")
@@ -178,6 +180,33 @@ def quota_from_auth_files(payload: Any, now: datetime) -> dict[str, Any]:
     return {"credentials": credentials, "has_data": any(c["limits"] for c in credentials)}
 
 
+def memory_status(proc_root: Path = Path("/proc"), cgroup_root: Path = Path("/sys/fs/cgroup")) -> dict[str, Any]:
+    """This process's RSS against its cgroup memory limit (systemd MemoryHigh/MemoryMax)."""
+    rss = limit = None
+    limit_kind = None
+    try:
+        for line in (proc_root / "self" / "status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                rss = int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    try:
+        path = next(l.split("::", 1)[1] for l in (proc_root / "self" / "cgroup").read_text().splitlines() if l.startswith("0::"))
+        group = cgroup_root / path.strip().lstrip("/")
+        for kind in ("memory.high", "memory.max"):
+            value = (group / kind).read_text().strip()
+            if value != "max":
+                limit, limit_kind = int(value), kind
+                break
+    except (OSError, StopIteration, ValueError):
+        pass
+    used = round(rss / limit, 3) if rss is not None and limit else None
+    warning = None
+    if used is not None and used >= MEMORY_WARN_FRACTION:
+        warning = f"service memory at {used:.0%} of its {limit_kind} limit ({rss / 2**20:.0f} of {limit / 2**20:.0f} MiB); archive old history (tools/datastore.py archive)"
+    return {"rss_bytes": rss, "limit_bytes": limit, "limit_kind": limit_kind, "used_fraction": used, "warning": warning}
+
+
 def storage_status(data_dir: Path, now: datetime) -> dict[str, Any]:
     """Size of the history, free disk, and the newest backup written by tools/datastore.py."""
     requests_path = data_dir / "requests.jsonl"
@@ -199,7 +228,8 @@ def storage_status(data_dir: Path, now: datetime) -> dict[str, Any]:
         except ValueError:
             newest_at = None
     backup_age = round((now - newest_at).total_seconds()) if newest_at else None
-    warnings = []
+    memory = memory_status()
+    warnings = [memory["warning"]] if memory["warning"] else []
     if free is not None and free < DISK_FREE_WARN_BYTES:
         warnings.append(f"only {free / 1024**3:.1f} GiB free on the data disk")
     if backup_age is None:
@@ -212,6 +242,7 @@ def storage_status(data_dir: Path, now: datetime) -> dict[str, Any]:
         "backups": len(backups),
         "newest_backup_at": iso_utc(newest_at) if newest_at else None,
         "newest_backup_age_s": backup_age,
+        "memory": memory,
         "warnings": warnings,
     }
 

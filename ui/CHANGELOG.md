@@ -14,6 +14,11 @@ Versions are shown in the dashboard header/footer, `/api/health` and
 - The store and the oracle stream `requests.jsonl` instead of reading it
   whole: load-time peak 9.9 → 3.3 KB/record (store), 13.8 → 1.3 KB/record
   (oracle). Memory-guarded `tools/scale_test.py` (20k records max on this host).
+- `tools/datastore.py` streams every operation (backup memory no longer grows
+  with the history; snapshots stay consistent while the file is appended to).
+- cgroup memory caps: cproxy-ui `MemoryHigh=600M`/`MemoryMax=900M`, backup unit
+  `MemoryMax=256M`; `/api/health` reports RSS against the limit and the dashboard
+  warns at 70%.
 
 ## 0.2.0 — 2026-09-27 (tag `cproxy-ui-v0.2`)
 
