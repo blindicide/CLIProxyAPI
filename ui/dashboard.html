@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="cproxy-ui" content="dashboard">
+<meta name="cproxy-ui-version" content="__CPROXY_UI_VERSION__">
+<title>cproxy analytics v__CPROXY_UI_VERSION__</title>
+<style>
+:root{color-scheme:light dark;--bg:#0f1218;--panel:#171c25;--panel2:#1d2330;--line:#2a3242;--text:#e8edf5;--muted:#93a0b4;--accent:#8ab8ff;--ok:#7fdc9c;--warn:#f3c26b;--bad:#ff8a8a;--bar:#5d8fe6;--bar2:#b98cf0;--bar3:#6fcfb8}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f6;--line:#dde2ea;--text:#18202c;--muted:#5f6b7d;--accent:#2759c4;--ok:#1d8a4a;--warn:#a86b00;--bad:#c53030;--bar:#3a6fd6;--bar2:#8a55d6;--bar3:#1f9c82}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1440px;margin:0 auto;padding:18px 16px 40px}
+a{color:var(--accent)}
+.mono,td.num,.num{font-variant-numeric:tabular-nums}
+header{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;justify-content:space-between;margin-bottom:12px}
+h1{margin:0;font-size:20px;letter-spacing:-.2px}
+h1 small{font-weight:500;color:var(--muted);font-size:12.5px;margin-left:6px}
+h2{font-size:14px;margin:0;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:12.5px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;background:var(--panel)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}
+.controls{display:flex;gap:6px;align-items:center}
+.seg button{background:var(--panel);color:var(--text);border:1px solid var(--line);padding:5px 11px;font:inherit;cursor:pointer}
+.seg button:first-child{border-radius:7px 0 0 7px}.seg button:last-child{border-radius:0 7px 7px 0}
+.seg button+button{border-left:0}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+.btn{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:5px 10px;font:inherit;cursor:pointer}
+.banner{display:none;border:1px solid var(--bad);background:color-mix(in srgb,var(--bad) 14%,var(--panel));color:var(--text);padding:9px 12px;border-radius:8px;margin:8px 0 12px}
+.banner.show{display:block}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:10px 0 16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;min-width:0}
+.card .v{font-size:19px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .l{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
+.card .s{color:var(--muted);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card.hl{border-color:var(--accent)}
+section{margin-top:18px}
+.sec-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:7px;flex-wrap:wrap}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;min-width:0}
+.panel h3{margin:0 0 6px;font-size:12.5px;color:var(--muted);font-weight:600}
+.tw{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:9px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:5px 9px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:600;background:var(--panel2);position:sticky;top:0}
+td.num,th.num{text-align:right}
+tr:last-child td{border-bottom:0}
+td.wrap{white-space:normal;max-width:320px;word-break:break-all}
+.empty{color:var(--muted);text-align:center;padding:16px}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.muted{color:var(--muted)}
+.qbar{height:9px;background:var(--panel2);border-radius:5px;overflow:hidden;margin:4px 0 3px;border:1px solid var(--line)}
+.qfill{height:100%;background:var(--ok)}
+.qfill.warn{background:var(--warn)}.qfill.bad{background:var(--bad)}
+.qrow{display:grid;grid-template-columns:44px 1fr 64px;gap:8px;align-items:center}
+.qmeta{color:var(--muted);font-size:11.5px;margin:0 0 8px 52px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12.5px}
+.kv dt{color:var(--muted)}.kv dd{margin:0}
+svg.chart{width:100%;height:150px;display:block}
+svg.chart text{fill:var(--muted);font-size:10px}
+svg.chart .grid{stroke:var(--line);stroke-width:1}
+.legend{color:var(--muted);font-size:11.5px}
+.sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 4px 0 8px;vertical-align:-1px}
+footer{margin-top:24px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:10px;display:flex;flex-wrap:wrap;gap:6px 18px}
+.tag{font-size:10.5px;border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--muted)}
+@media (max-width:640px){.card .v{font-size:16px}h1{font-size:18px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div>
+    <h1>cproxy analytics <small id="ver">v__CPROXY_UI_VERSION__ · build __CPROXY_UI_BUILD__</small></h1>
+    <div class="meta">
+      <span class="chip" title="management API / ingest status"><span class="dot" id="live-dot"></span><span id="live-text">connecting…</span></span>
+      <span>account <b id="account">—</b></span>
+      <span>last ingest <b id="ingest-age">—</b></span>
+      <span>refreshed <b id="refreshed">—</b></span>
+      <a href="/api/health" target="_blank" rel="noopener">/api/health</a>
+    </div>
+  </div>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="time window" id="win">
+      <button data-w="24h">24h</button><button data-w="7d">7d</button><button data-w="30d">30d</button><button data-w="all">all</button>
+    </div>
+    <button class="btn" id="auto" aria-pressed="true" title="auto-refresh every 30 s">auto 30s</button>
+    <button class="btn" id="reload" title="refresh now">↻</button>
+  </div>
+</header>
+<div class="banner" id="banner" role="alert"></div>
+
+<div class="cards" id="cards"></div>
+
+<section>
+  <div class="sec-head"><h2>Subscription quota</h2><span class="muted" id="quota-note"></span></div>
+  <div class="grid3" id="quota"></div>
+</section>
+
+<section>
+  <div class="sec-head"><h2>Time series</h2><span class="legend" id="series-note"></span></div>
+  <div class="grid3">
+    <div class="panel"><h3>Requests <span class="legend"><span class="sw" style="background:var(--bar)"></span>ok<span class="sw" style="background:var(--bad)"></span>failed</span></h3><svg class="chart" id="ch-req" role="img" aria-label="requests per bucket"></svg></div>
+    <div class="panel"><h3>Tokens <span class="legend"><span class="sw" style="background:var(--bar)"></span>input (incl. cache)<span class="sw" style="background:var(--bar2)"></span>output</span></h3><svg class="chart" id="ch-tok" role="img" aria-label="tokens per bucket"></svg></div>
+    <div class="panel"><h3>Est. cost (USD, list-price equivalent)</h3><svg class="chart" id="ch-cost" role="img" aria-label="cost per bucket"></svg></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><h2>Per model</h2><span class="muted" id="unpriced-note"></span></div>
+  <div class="tw"><table id="t-model"></table></div>
+</section>
+
+<section class="grid2">
+  <div><div class="sec-head"><h2>Per day (local)</h2></div><div class="tw"><table id="t-day"></table></div></div>
+  <div><div class="sec-head"><h2>Per endpoint</h2></div><div class="tw"><table id="t-endpoint"></table></div></div>
+</section>
+
+<section class="grid3">
+  <div><div class="sec-head"><h2>Per client key</h2></div><div class="tw"><table id="t-key"></table></div></div>
+  <div><div class="sec-head"><h2>Per client IP</h2></div><div class="tw"><table id="t-ip"></table></div></div>
+  <div><div class="sec-head"><h2>Per user agent</h2></div><div class="tw"><table id="t-ua"></table></div></div>
+</section>
+
+<section>
+  <div class="sec-head"><h2>Recent requests</h2><span class="muted">last 100 · all time · times local (hover for UTC)</span></div>
+  <div class="tw"><table id="t-recent"></table></div>
+</section>
+
+<footer>
+  <span id="f-ver">cproxy-ui v__CPROXY_UI_VERSION__ (build __CPROXY_UI_BUILD__)</span>
+  <span>Costs: <b>list-price equivalent, not billed</b> — requests run on a Claude subscription.</span>
+  <span>Prices: <a id="f-src" href="#" target="_blank" rel="noopener">official Anthropic pricing</a> · as of <b id="f-asof">—</b></span>
+  <span id="f-assume"></span>
+</footer>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const REFRESH_MS = 30000;
+const WINDOW_KEY = "cproxy-ui-window";
+let windowSel = "24h";
+try { windowSel = localStorage.getItem(WINDOW_KEY) || "24h"; } catch (e) {}
+if (!["24h","7d","30d","all"].includes(windowSel)) windowSel = "24h";
+let timer = null;
+let auto = true;
+let pricing = null;
+let lastAnalytics = null;
+
+function esc(v){return String(v ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function n(v){return v==null?"—":Number(v).toLocaleString("en-US");}
+function k(v){if(v==null)return "—";v=Number(v);if(Math.abs(v)>=1e9)return (v/1e9).toFixed(2)+"B";if(Math.abs(v)>=1e6)return (v/1e6).toFixed(2)+"M";if(Math.abs(v)>=1e4)return (v/1e3).toFixed(1)+"k";return v.toLocaleString("en-US");}
+function usd(v){if(v==null)return "—";v=Number(v);if(v===0)return "$0.00";if(Math.abs(v)<0.01)return "$"+v.toFixed(5);if(Math.abs(v)<1)return "$"+v.toFixed(4);return "$"+v.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});}
+function ms(v){return v==null?"—":(v>=10000?(v/1000).toFixed(1)+" s":Math.round(v)+" ms");}
+function pct(v){return v==null?"—":Number(v).toFixed(1)+"%";}
+function age(s){if(s==null)return "never";s=Math.max(0,Math.round(s));if(s<90)return s+" s ago";if(s<5400)return Math.round(s/60)+" min ago";if(s<172800)return (s/3600).toFixed(1)+" h ago";return Math.round(s/86400)+" d ago";}
+const LOCAL_FMT = new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Amsterdam",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
+function localTs(iso){if(!iso)return "—";const d=new Date(iso);return isNaN(d)?esc(iso):LOCAL_FMT.format(d).replace(",","");}
+function utcTs(iso){if(!iso)return "";const d=new Date(iso);return isNaN(d)?"":d.toISOString().replace(".000Z","Z");}
+
+async function getJSON(url){
+  const r = await fetch(url,{cache:"no-store"});
+  let body = null;
+  try { body = await r.json(); } catch (e) { throw new Error(url+" returned HTTP "+r.status+" (not JSON)"); }
+  if (!r.ok && !(body && typeof body === "object")) throw new Error(url+" returned HTTP "+r.status);
+  return {status:r.status, body};
+}
+
+function card(label,value,sub,hl){return `<div class="card${hl?" hl":""}"><div class="l">${esc(label)}</div><div class="v" title="${esc(value)}">${esc(value)}</div><div class="s" title="${esc(sub||"")}">${esc(sub||" ")}</div></div>`;}
+
+function renderCards(a){
+  const s=a.summary;
+  const unpriced = s.unpriced_requests ? ` · ${s.unpriced_requests} unpriced excluded` : "";
+  $("cards").innerHTML=[
+    card("Requests",n(s.requests),`${s.requests_per_min==null?"—":s.requests_per_min.toFixed(3)} req/min over ${a.window}`),
+    card("Success",n(s.success),pct(s.success_pct)),
+    card("Failed",n(s.failed),pct(s.failed_pct)),
+    card("Est. cost",usd(s.estimated_cost_usd),"list-price equiv."+unpriced,true),
+    card("Tokens in",k(s.input_tokens),"incl. cache read + write"),
+    card("Tokens out",k(s.output_tokens),"incl. reasoning"),
+    card("Cache read",k(s.cache_read_tokens),""),
+    card("Cache write",k(s.cache_write_tokens),"priced at 5m TTL"),
+    card("Reasoning",k(s.reasoning_tokens),"billed as output"),
+    card("Latency avg",ms(s.avg_latency_ms),`p50 ${ms(s.p50_latency_ms)} · p95 ${ms(s.p95_latency_ms)}`),
+    card("TTFT avg",ms(s.avg_ttft_ms),`${n(s.ttft_samples)} samples with TTFT`),
+    card("Stream / non",`${n(s.stream_requests)} / ${n(s.non_stream_requests)}`,s.requests?pct(100*s.stream_requests/s.requests)+" streamed":""),
+  ].join("");
+  const um = Object.entries(s.unpriced_models||{});
+  $("unpriced-note").innerHTML = um.length ? `<span class="warn">Unpriced (not on official pricing page, excluded from cost totals): ${um.map(([m,c])=>esc(m)+" ×"+c).join(", ")}</span>` : "";
+}
+
+function table(el, cols, rows, emptyMsg){
+  const head = "<thead><tr>"+cols.map(c=>`<th class="${c.num?"num":""}">${esc(c.h)}</th>`).join("")+"</tr></thead>";
+  if(!rows.length){$(el).innerHTML=head+`<tbody><tr><td class="empty" colspan="${cols.length}">${esc(emptyMsg||"no data in this window")}</td></tr></tbody>`;return;}
+  $(el).innerHTML = head+"<tbody>"+rows.map(r=>"<tr>"+cols.map(c=>`<td class="${c.num?"num":""}${c.wrap?" wrap":""}"${c.title?` title="${esc(c.title(r))}"`:""}>${c.f(r)}</td>`).join("")+"</tr>").join("")+"</tbody>";
+}
+const groupCols = (keyH,keyF)=>[
+  {h:keyH,f:keyF},
+  {h:"req",num:1,f:r=>n(r.requests)},
+  {h:"fail",num:1,f:r=>r.failed?`<span class="bad">${n(r.failed)}</span>`:"0"},
+  {h:"tok in",num:1,f:r=>k(r.input_tokens)},
+  {h:"tok out",num:1,f:r=>k(r.output_tokens)},
+  {h:"cost",num:1,f:r=>usd(r.cost_usd)},
+  {h:"avg lat",num:1,f:r=>ms(r.avg_latency_ms)},
+  {h:"share",num:1,f:r=>pct(r.share_pct)},
+];
+
+function renderTables(a){
+  table("t-model",[
+    {h:"model",f:r=>esc(r.model)+(r.priced_requests===0?' <span class="tag">unpriced</span>':"")},
+    {h:"req",num:1,f:r=>n(r.requests)},
+    {h:"fail",num:1,f:r=>r.failed?`<span class="bad">${n(r.failed)}</span>`:"0"},
+    {h:"tok in",num:1,f:r=>k(r.input_tokens)},
+    {h:"tok out",num:1,f:r=>k(r.output_tokens)},
+    {h:"cache read",num:1,f:r=>k(r.cache_read_tokens)},
+    {h:"cache write",num:1,f:r=>k(r.cache_write_tokens)},
+    {h:"reasoning",num:1,f:r=>k(r.reasoning_tokens)},
+    {h:"cost",num:1,f:r=>usd(r.cost_usd)},
+    {h:"avg lat",num:1,f:r=>ms(r.avg_latency_ms)},
+    {h:"share",num:1,f:r=>pct(r.share_pct)},
+  ],a.per_model);
+  table("t-day",groupCols("day",r=>esc(r.day)),a.per_day.slice().reverse());
+  table("t-endpoint",groupCols("endpoint",r=>esc(r.endpoint)),a.per_endpoint);
+  table("t-key",[{h:"key",f:r=>`${esc(r.key_name)} <span class="muted mono">${esc(r.key_masked||"")}</span>`},...groupCols("",()=>"" ).slice(1,3),{h:"cost",num:1,f:r=>usd(r.cost_usd)},{h:"share",num:1,f:r=>pct(r.share_pct)}],a.per_key);
+  table("t-ip",[{h:"client ip",f:r=>esc(r.client_ip)},...groupCols("",()=>"").slice(1,3),{h:"cost",num:1,f:r=>usd(r.cost_usd)},{h:"share",num:1,f:r=>pct(r.share_pct)}],a.per_client_ip);
+  table("t-ua",[{h:"user agent",f:r=>esc(r.user_agent)},...groupCols("",()=>"").slice(1,3),{h:"cost",num:1,f:r=>usd(r.cost_usd)},{h:"share",num:1,f:r=>pct(r.share_pct)}],a.per_user_agent);
+}
+
+function renderRecent(list){
+  table("t-recent",[
+    {h:"time",f:r=>localTs(r.timestamp),title:r=>"UTC "+utcTs(r.timestamp)},
+    {h:"model",f:r=>esc(r.model)},
+    {h:"endpoint",f:r=>esc(r.endpoint_path||r.endpoint)},
+    {h:"stream",f:r=>r.stream?"yes":"no"},
+    {h:"status",f:r=>r.failed?`<span class="bad">${esc(r.status_code??"fail")}</span>`:`<span class="ok">${esc(r.status_code??"ok")}</span>`,title:r=>r.fail_body||""},
+    {h:"tok in",num:1,f:r=>k(r.usage.input_total)},
+    {h:"tok out",num:1,f:r=>k(r.usage.output)},
+    {h:"cost",num:1,f:r=>usd(r.cost_usd)+(r.cost_quality!=="complete"?' <span class="tag" title="'+esc(r.cost_quality)+'">est</span>':"")},
+    {h:"latency",num:1,f:r=>ms(r.latency_ms)},
+    {h:"ttft",num:1,f:r=>r.ttft_ms?ms(r.ttft_ms):"—"},
+    {h:"key",f:r=>`${esc(r.api_key_name)} <span class="muted mono">${esc(r.api_key_masked||"")}</span>`},
+  ],list,"no requests recorded yet");
+}
+
+// ---- charts (inline SVG, no external libs) ----
+function buckets(a){
+  const map=new Map(a.series.map(r=>[r.bucket,r]));
+  const out=[];
+  const pad=(x)=>String(x).padStart(2,"0");
+  const partsOf=(d)=>Object.fromEntries(new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Amsterdam",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hour12:false}).formatToParts(d).map(p=>[p.type,p.value]));
+  const keyOf=(d,hour)=>{const p=partsOf(d);const h=p.hour==="24"?"00":p.hour;return hour?`${p.year}-${p.month}-${p.day}T${h}:00`:`${p.year}-${p.month}-${p.day}`;};
+  const end=new Date(a.generated_at);
+  let start = a.window_start ? new Date(a.window_start) : null;
+  if(!start){return a.series;}
+  const hour = a.series_granularity==="hour";
+  const step = hour?3600e3:86400e3;
+  const seen=new Set();
+  for(let t=start.getTime(); t<=end.getTime()+step; t+=step){
+    const key=keyOf(new Date(Math.min(t,end.getTime())),hour);
+    if(seen.has(key))continue; seen.add(key);
+    out.push(map.get(key)||{bucket:key,requests:0,failed:0,success:0,input_tokens:0,output_tokens:0,cost_usd:null});
+    if(t>=end.getTime())break;
+  }
+  for(const r of a.series){if(!seen.has(r.bucket))out.push(r);}
+  out.sort((x,y)=>x.bucket<y.bucket?-1:1);
+  return out.length>400?out.slice(-400):out;
+}
+function bars(svgId, data, layers, fmt, labelOf){
+  const svg=$(svgId); const W=svg.clientWidth||400, H=150, L=46, B=18, T=8, R=6;
+  const max=Math.max(0,...data.map(d=>layers.reduce((s,l)=>s+(Number(l.v(d))||0),0)));
+  if(!data.length||max<=0){svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle">no data in this window</text>`;return;}
+  const cw=(W-L-R)/data.length, bw=Math.max(1,cw*0.78);
+  let g="";
+  for(let i=0;i<=3;i++){const y=T+(H-T-B)*(1-i/3);g+=`<line class="grid" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text x="${L-4}" y="${y+3}" text-anchor="end">${esc(fmt(max*i/3))}</text>`;}
+  data.forEach((d,i)=>{
+    let y=H-B; const x=L+i*cw+(cw-bw)/2;
+    const tip=[labelOf(d.bucket)].concat(layers.map(l=>`${l.name}: ${fmt(Number(l.v(d))||0)}`)).join("\n");
+    let rects="";
+    for(const l of layers){const v=Number(l.v(d))||0; if(v<=0)continue; const h=(H-T-B)*v/max; y-=h; rects+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h,0.5).toFixed(1)}" fill="${l.c}"/>`;}
+    g+=`<g><title>${esc(tip)}</title><rect x="${(L+i*cw).toFixed(1)}" y="${T}" width="${cw.toFixed(1)}" height="${H-T-B}" fill="transparent"/>${rects}</g>`;
+  });
+  const every=Math.max(1,Math.ceil(data.length/6));
+  data.forEach((d,i)=>{if(i%every===0||i===data.length-1&&data.length<8)g+=`<text x="${(L+i*cw+cw/2).toFixed(1)}" y="${H-5}" text-anchor="middle">${esc(labelOf(d.bucket,true))}</text>`;});
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  svg.innerHTML=g;
+}
+function renderCharts(a){
+  const data=buckets(a);
+  const hour=a.series_granularity==="hour";
+  const lab=(b,short)=>hour?(short?b.slice(11,16):b.replace("T"," ")):(short?b.slice(5):b);
+  $("series-note").textContent = `per ${a.series_granularity} · Europe/Amsterdam · window ${a.window}`;
+  bars("ch-req",data,[{name:"ok",c:"var(--bar)",v:d=>d.requests-(d.failed||0)},{name:"failed",c:"var(--bad)",v:d=>d.failed}],v=>k(Math.round(v)),lab);
+  bars("ch-tok",data,[{name:"input",c:"var(--bar)",v:d=>d.input_tokens},{name:"output",c:"var(--bar2)",v:d=>d.output_tokens}],k,lab);
+  bars("ch-cost",data,[{name:"cost",c:"var(--bar3)",v:d=>d.cost_usd||0}],usd,lab);
+}
+
+function qbar(label,w){
+  if(!w)return "";
+  const p=w.used_pct; const cls=p==null?"":(p>=90?"bad":p>=70?"warn":"");
+  const reset=w.reset||{};
+  return `<div class="qrow"><b>${esc(label)}</b><div class="qbar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p??0}" aria-label="${esc(label)} used"><div class="qfill ${cls}" style="width:${Math.min(100,p||0)}%"></div></div><span class="num">${p==null?"—":p.toFixed(0)+"% used"}</span></div>
+  <div class="qmeta">status <b class="${w.status==="allowed"?"ok":"bad"}">${esc(w.status||"—")}</b> · resets ${reset.utc?`${esc(localTs(reset.utc))} local · ${esc(utcTs(reset.utc))}`:"—"}</div>`;
+}
+function renderQuota(q){
+  if(!q.available){$("quota").innerHTML=`<div class="panel bad">Quota unavailable: ${esc(q.error||"management API unreachable")}</div>`;$("quota-note").textContent="";return;}
+  const creds=q.credentials||[];
+  if(!creds.length){$("quota").innerHTML='<div class="panel muted">no data — no credentials reported</div>';return;}
+  $("account").textContent = creds.map(c=>c.label||c.id).join(", ");
+  $("quota-note").textContent = `from /v0/management/auth-files · checked ${localTs(q.checked_at)}`;
+  const keys=(q.client_keys||[]).map(c=>`${esc(c.name)} <span class="mono muted">${esc(c.key_masked)}</span>`).join("<br>")||"no data";
+  const ukeys=(q.upstream_key_usage||[]).length?q.upstream_key_usage.map(u=>`${esc(u.provider)} ${esc(u.key_masked)} ok ${n(u.success)} / fail ${n(u.failed)}`).join("<br>"):"no data (no upstream API-key credentials)";
+  const provs=(q.quota_providers||[]).length?esc(JSON.stringify(q.quota_providers)):"no data";
+  $("quota").innerHTML = creds.map(c=>{
+    const l=c.limits;
+    const health = c.disabled?'<b class="bad">disabled</b>':(c.cooldowns&&c.cooldowns.length?`<b class="warn">cooling down (${c.cooldowns.length})</b>`:'<b class="ok">enabled</b>');
+    return `<div class="panel"><h3>${esc(c.label||c.id)} <span class="tag">${esc(c.provider||"")}</span> <span class="tag">${esc(c.account_type||"")}</span></h3>
+    ${l?qbar("5h",l.windows["5h"])+qbar("7d",l.windows["7d"]):'<div class="muted">no quota signals observed yet (they arrive with the first upstream response)</div>'}
+    <dl class="kv">
+      <dt>health</dt><dd>${health} · failed count <b class="${c.failed?"warn":""}">${n(c.failed)}</b></dd>
+      <dt>overall</dt><dd>${l?`${esc(l.status||"—")} · claim ${esc(l.representative_claim||"—")}`:"—"}</dd>
+      <dt>overage</dt><dd>${l?`${esc(l.overage_status||"—")} (${esc(l.overage_disabled_reason||"—")})`:"—"}</dd>
+      <dt>fallback</dt><dd>${l&&l.fallback_percentage!=null?pct(l.fallback_percentage*100):"—"}</dd>
+      <dt>observed</dt><dd>${c.quota_observed_at?`${esc(localTs(c.quota_observed_at))} (${esc(age(c.quota_observed_age_s))})`:"—"}</dd>
+      <dt>cooldowns</dt><dd>${c.cooldowns&&c.cooldowns.length?esc(JSON.stringify(c.cooldowns)):"none"}</dd>
+    </dl></div>`;
+  }).join("") + `<div class="panel"><h3>Keys &amp; providers</h3><dl class="kv"><dt>client keys</dt><dd>${keys}</dd><dt>upstream keys</dt><dd>${ukeys}</dd><dt>quota providers</dt><dd>${provs}</dd></dl></div>`;
+}
+
+function setLive(state,text){$("live-dot").className="dot "+state;$("live-text").textContent=text;}
+
+async function refresh(){
+  const banner=[];
+  try{
+    const [an,rq,qt]=await Promise.allSettled([getJSON(`/api/analytics?window=${encodeURIComponent(windowSel)}`),getJSON("/api/requests?limit=100"),getJSON("/api/quota")]);
+    if(an.status==="fulfilled"&&an.value.status===200){
+      const a=an.value.body;
+      lastAnalytics=a;renderCards(a);renderTables(a);renderCharts(a);
+      $("ingest-age").textContent=age(a.ingest.last_ingest_age_s);
+      if(a.management.reachable){setLive("ok","live · ingest ok");}
+      else{setLive("bad","stale · management API unreachable");banner.push(`Management API unreachable (${a.management.last_error||"no successful poll in the last 30 s"}). Last successful poll ${a.management.last_ok_at?localTs(a.management.last_ok_at):"never"} — figures below may be stale.`);}
+      if(a.ingest.last_ingest_at==null)$("ingest-age").textContent="never";
+    }else{
+      setLive("bad","dashboard API error");
+      banner.push("Analytics API failed: "+(an.reason?an.reason.message:("HTTP "+an.value.status)));
+    }
+    if(rq.status==="fulfilled"&&rq.value.status===200)renderRecent(rq.value.body.requests);
+    if(qt.status==="fulfilled")renderQuota(qt.value.body);else renderQuota({available:false,error:qt.reason.message});
+    if(qt.status==="fulfilled"&&!qt.value.body.available)banner.push("Quota panel: "+(qt.value.body.error||"unavailable"));
+  }catch(e){setLive("bad","UI backend unreachable");banner.push("UI backend unreachable: "+e.message);}
+  const b=$("banner");b.textContent=banner.join(" ");b.classList.toggle("show",banner.length>0);
+  $("refreshed").textContent=LOCAL_FMT.format(new Date()).slice(12);
+}
+
+async function loadStatic(){
+  try{
+    const [h,p]=await Promise.all([getJSON("/api/health"),getJSON("/api/pricing")]);
+    pricing=p.body;
+    $("ver").textContent=`v${h.body.version} · build ${h.body.build_date}`;
+    $("f-ver").textContent=`${h.body.service} v${h.body.version} (build ${h.body.build_date})`;
+    document.title=`cproxy analytics v${h.body.version}`;
+    $("f-src").href=pricing.source_url;$("f-src").textContent=pricing.source_url;
+    $("f-asof").textContent=pricing.as_of;
+    $("f-assume").textContent=`Cache writes priced at the ${pricing.cache_write_ttl_assumption} TTL rate (records carry no TTL split); reasoning billed as output; unpriced legacy models (e.g. Sonnet 3.7) excluded from totals.`;
+  }catch(e){$("banner").textContent="UI backend unreachable: "+e.message;$("banner").classList.add("show");}
+}
+
+function schedule(){clearInterval(timer);if(auto)timer=setInterval(refresh,REFRESH_MS);$("auto").setAttribute("aria-pressed",String(auto));$("auto").textContent=auto?"auto 30s":"paused";}
+document.querySelectorAll("#win button").forEach(btn=>{
+  btn.setAttribute("aria-pressed",String(btn.dataset.w===windowSel));
+  btn.addEventListener("click",()=>{windowSel=btn.dataset.w;try{localStorage.setItem(WINDOW_KEY,windowSel);}catch(e){}document.querySelectorAll("#win button").forEach(b=>b.setAttribute("aria-pressed",String(b===btn)));refresh();});
+});
+$("auto").addEventListener("click",()=>{auto=!auto;schedule();});
+$("reload").addEventListener("click",refresh);
+window.addEventListener("resize",()=>{clearTimeout(window._rz);window._rz=setTimeout(()=>{if(lastAnalytics)renderCharts(lastAnalytics);},200);});
+loadStatic().then(refresh);schedule();
+</script>
+</body>
+</html>
