@@ -16,6 +16,7 @@ from typing import Any, AsyncIterator
 import httpx
 from fastapi import FastAPI, Query, Request
 from fastapi.concurrency import iterate_in_threadpool, run_in_threadpool
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from analytics import WINDOWS, DerivedCache, aggregate, filter_window, local_iso, recent
@@ -220,6 +221,8 @@ def create_app(
                 await app.state.client.aclose()
 
     app = FastAPI(title="cproxy analytics", version=VERSION, lifespan=lifespan)
+    # Dashboard polls (/api/requests is ~2 KB per row) compress ~8-10x; nginx does not gzip here.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.state.client = client or httpx.AsyncClient(timeout=10)
     app.state.own_client = client is None
     app.state.management = ManagementAPI(management_url, management_key or os.getenv("CPROXY_MANAGEMENT_KEY"), app.state.client)

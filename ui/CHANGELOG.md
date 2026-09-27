@@ -13,6 +13,10 @@ Versions are shown in the dashboard header/footer, `/api/health` and
 - Runtime and test dependencies split; tests move to pytest >= 9.0.3
   (PYSEC-2026-1845, predictable `/tmp/pytest-of-<user>`); `requirements.lock`
   pins the exact tested set, which pip-audit reports clean.
+- Responses over 1 KB are gzip-compressed by the app (nginx does not compress
+  here): a 30 s dashboard poll drops from ~64 KB to ~7.7 KB.
+- Upstream API-key usage rows skip malformed entries; tests for the live
+  quota shape, key masking, backlog draining and schema drift (coverage 98%).
 
 ## 0.2.0 — 2026-09-27
 
