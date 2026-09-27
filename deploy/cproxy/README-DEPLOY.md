@@ -94,7 +94,7 @@ Note `401 "OAuth access token has been revoked"` vs `429 rate_limit_error`:
 
 ## Analytics dashboard (cproxy-ui)
 
-FastAPI + uvicorn app in `ui/` (version in `ui/version.py`, currently 0.1.0),
+FastAPI + uvicorn app in `ui/` (version in `ui/version.py`; history in `ui/CHANGELOG.md`),
 modelled on the agy-proxy `ui/` skin.
 Developer docs (architecture, record schema, API shapes, pricing rules, test
 and secret policy): [`ui/README.md`](../../ui/README.md).
