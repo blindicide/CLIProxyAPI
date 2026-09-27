@@ -28,6 +28,8 @@ STALE_AFTER_SECONDS = 30.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("cproxy-ui")
+# httpx logs every request at INFO; the poller runs every 2 s.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class ManagementError(RuntimeError):
