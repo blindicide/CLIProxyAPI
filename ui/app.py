@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
+import re
 import os
 import time
 from contextlib import asynccontextmanager
@@ -34,6 +37,39 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("cproxy-ui")
 # httpx logs every request at INFO; the poller runs every 2 s.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
+
+
+def dashboard_csp(html: str) -> str:
+    """Content-Security-Policy for the dashboard, pinning each inline <script> by its sha256.
+
+    Inline ``style=`` attributes (bar widths, legend swatches) need 'unsafe-inline' for styles;
+    scripts get no such allowance, so injected markup cannot execute code.
+    """
+    hashes = [
+        "'sha256-" + base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode("ascii") + "'"
+        for body in re.findall(r"<script>(.*?)</script>", html, flags=re.DOTALL)
+    ]
+    return "; ".join(
+        [
+            "default-src 'none'",
+            "script-src " + (" ".join(hashes) or "'none'"),
+            "style-src 'unsafe-inline'",
+            "img-src 'self' data:",
+            "connect-src 'self'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            "frame-ancestors 'none'",
+        ]
+    )
 
 
 class ManagementError(RuntimeError):
@@ -248,12 +284,23 @@ def create_app(
         }
 
     dashboard_html = (ROOT / "dashboard.html").read_text(encoding="utf-8").replace("__CPROXY_UI_VERSION__", VERSION).replace("__CPROXY_UI_BUILD__", BUILD_DATE)
+    dashboard_headers = {"Cache-Control": "no-cache", "Content-Security-Policy": dashboard_csp(dashboard_html)}
 
-    @app.get("/", include_in_schema=False)
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        if request.url.path.startswith("/api/"):
+            # Live figures: never let a browser or proxy serve them from cache.
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
     async def dashboard() -> HTMLResponse:
-        return HTMLResponse(dashboard_html, headers={"Cache-Control": "no-cache"})
+        return HTMLResponse(dashboard_html, headers=dashboard_headers)
 
-    @app.get("/api/health")
+    @app.api_route("/api/health", methods=["GET", "HEAD"])
     async def health() -> JSONResponse:
         now = utc_now()
         mgmt = management_status(now)
