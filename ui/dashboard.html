@@ -133,6 +133,7 @@ footer{margin-top:24px;color:var(--muted);font-size:12px;border-top:1px solid va
   <span>Costs: <b>list-price equivalent, not billed</b> — requests run on a Claude subscription.</span>
   <span>Prices: <a id="f-src" href="#" target="_blank" rel="noopener">official Anthropic pricing</a> · as of <b id="f-asof">—</b></span>
   <span id="f-assume"></span>
+  <span>Not counted: requests cproxy rejects before provider dispatch (e.g. unknown model → 400) emit no usage record.</span>
 </footer>
 </main>
 <script>
