@@ -17,6 +17,7 @@ server-side and returned by `/api/health` and `/api/analytics`.
 | `ingest.py` | usage-queue drain loop, record normalisation + key masking, `RecordStore` (JSONL + state), loss-window detection |
 | `pricing.py` | Anthropic list-price table, model id resolution, per-record cost |
 | `analytics.py` | window filtering and aggregation (`aggregate`, `recent`), `DerivedCache` |
+| `export.py` | CSV export rows (`/api/export.csv`) with formula-injection guard |
 | `dashboard.html` | the whole UI: inline CSS + vanilla JS + inline SVG charts, no external assets |
 | `tests/` | pytest suite; `fixtures/usage_queue_sample.redacted.json` holds real captured queue records |
 
@@ -82,6 +83,7 @@ All JSON. `window` is `24h | 7d | 30d | all` (anything else → 400).
 | `GET /api/pricing` | `source_url`, `as_of`, `currency`, `unit`, `basis`, `formula`, `cache_write_ttl_assumption`, notes, `models` |
 | `GET /api/quota` | `available`, `checked_at(_local)`, `credentials` (5h/7d utilisation, resets local+UTC, overage, `failed`, `cooldowns`), `has_data`, `client_keys` (masked), `upstream_key_usage`, `quota_providers`; 503 when the management API is down |
 | `GET /api/requests?limit=N` | `total`, `limit`, `requests` (newest first, with `cost_usd`, `cost_quality`, `usage`, `timestamp_local`); `1 ≤ N ≤ 5000` |
+| `GET /api/export.csv?window=` | CSV download (default `all`), one row per request, oldest first: timestamps (UTC + local), model, endpoint, status, token buckets, `cost_usd` (empty when unpriced), `cost_quality`, latency, masked key, client IP, user agent, ids. Cells starting with `= + - @` are prefixed with `'` (spreadsheet formula-injection guard) |
 | `GET /api/models` | `available`, `error`, `count`, `models` (served ids joined with price rows), `pricing` |
 
 `ingest` carries `records`, `total_ingested`, `duplicates_skipped`,

@@ -27,7 +27,7 @@ h2{font-size:14px;margin:0;text-transform:uppercase;letter-spacing:.06em;color:v
 .seg button:first-child{border-radius:7px 0 0 7px}.seg button:last-child{border-radius:0 7px 7px 0}
 .seg button+button{border-left:0}
 .seg button[aria-pressed="true"]{background:var(--accent);color:var(--bg);border-color:var(--accent)}
-.btn{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:5px 10px;font:inherit;cursor:pointer}
+.btn{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:5px 10px;font:inherit;cursor:pointer;text-decoration:none}
 .banner{display:none;border:1px solid var(--bad);background:color-mix(in srgb,var(--bad) 14%,var(--panel));color:var(--text);padding:9px 12px;border-radius:8px;margin:8px 0 12px}
 .banner.show{display:block}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:10px 0 16px}
@@ -88,7 +88,8 @@ footer{margin-top:24px;color:var(--muted);font-size:12px;border-top:1px solid va
       <button data-w="24h">24h</button><button data-w="7d">7d</button><button data-w="30d">30d</button><button data-w="all">all</button>
     </div>
     <button class="btn" id="auto" aria-pressed="true" title="auto-refresh every 30 s">auto 30s</button>
-    <button class="btn" id="reload" title="refresh now">↻</button>
+    <button class="btn" id="reload" title="refresh now" aria-label="refresh now">↻</button>
+    <a class="btn" id="export" href="/api/export.csv?window=24h" download title="download the requests in this window as CSV">CSV</a>
   </div>
 </header>
 <div class="banner" id="banner" role="alert"></div>
@@ -380,9 +381,11 @@ async function loadStatic(){
 }
 
 function schedule(){clearInterval(timer);if(auto)timer=setInterval(refresh,REFRESH_MS);$("auto").setAttribute("aria-pressed",String(auto));$("auto").textContent=auto?"auto 30s":"paused";}
+function syncExport(){$("export").href=`/api/export.csv?window=${encodeURIComponent(windowSel)}`;}
+syncExport();
 document.querySelectorAll("#win button").forEach(btn=>{
   btn.setAttribute("aria-pressed",String(btn.dataset.w===windowSel));
-  btn.addEventListener("click",()=>{windowSel=btn.dataset.w;try{localStorage.setItem(WINDOW_KEY,windowSel);}catch(e){}document.querySelectorAll("#win button").forEach(b=>b.setAttribute("aria-pressed",String(b===btn)));refresh();});
+  btn.addEventListener("click",()=>{windowSel=btn.dataset.w;try{localStorage.setItem(WINDOW_KEY,windowSel);}catch(e){}document.querySelectorAll("#win button").forEach(b=>b.setAttribute("aria-pressed",String(b===btn)));syncExport();refresh();});
 });
 $("auto").addEventListener("click",()=>{auto=!auto;schedule();});
 $("reload").addEventListener("click",refresh);

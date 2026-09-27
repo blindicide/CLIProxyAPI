@@ -15,10 +15,11 @@ from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Query, Request
-from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.concurrency import iterate_in_threadpool, run_in_threadpool
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from analytics import WINDOWS, DerivedCache, aggregate, local_iso, recent
+from analytics import WINDOWS, DerivedCache, aggregate, filter_window, local_iso, recent
+from export import csv_lines
 from ingest import DEFAULT_QUEUE_RETENTION_SECONDS, RecordStore, drain_queue, iso_utc, key_names_from_config, loss_window, mask_key, parse_ts, ratelimit_from_signals, retention_from_config, utc_now
 from pricing import AS_OF, BASIS, PRICING, SOURCE_URL, pricing_payload, resolve_model
 from version import BUILD_DATE, SERVICE, VERSION
@@ -379,6 +380,19 @@ def create_app(
         result["ingest"] = ingest_status(now)
         result["pricing"] = {"source_url": SOURCE_URL, "as_of": AS_OF, "basis": BASIS}
         return JSONResponse(result)
+
+    @app.get("/api/export.csv")
+    async def export_csv(window: str = Query("all")) -> Any:
+        if window not in WINDOWS:
+            return JSONResponse({"error": f"window must be one of {', '.join(WINDOWS)}"}, status_code=400)
+        now = utc_now()
+        selected = await run_in_threadpool(filter_window, list(app.state.store.records), window, now, app.state.derived)
+        stamp = now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+        return StreamingResponse(
+            iterate_in_threadpool(csv_lines(selected)),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="cproxy-usage-{window}-{stamp}.csv"'},
+        )
 
     @app.get("/api/pricing")
     async def pricing() -> JSONResponse:
