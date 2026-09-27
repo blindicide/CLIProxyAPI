@@ -294,6 +294,11 @@ class RecordStore:
             "last_write_error": None,
             "loss_windows": [],
             "loss_windows_total": 0,
+            "archived_total": 0,
+            "archive_last_attempt_at": None,
+            "archive_last_success_at": None,
+            "archive_last_error": None,
+            "archive_last_result": None,
         }
         self._load()
 

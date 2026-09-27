@@ -19,6 +19,11 @@ Versions are shown in the dashboard header/footer, `/api/health` and
 - cgroup memory caps: cproxy-ui `MemoryHigh=600M`/`MemoryMax=900M`, backup unit
   `MemoryMax=256M`; `/api/health` reports RSS against the limit and the dashboard
   warns at 70%.
+- Automatic archiving: records older than 180 days move daily into
+  `data/archive/*.jsonl.gz` only after a fresh verified backup and a
+  read-back-verified archive exist; journaled in-place rewrite with crash
+  recovery; any failed check keeps everything and warns. `datastore.py audit`
+  proves live ∪ archives == total ingested.
 
 ## 0.2.0 — 2026-09-27 (tag `cproxy-ui-v0.2`)
 

@@ -283,8 +283,30 @@ and repeat the `/v1/models` and completion checks. Never leave the API broken.
 
 ### History retention, backup and restore
 
-**Retention policy: `ui/requests.jsonl` is never truncated or rotated
-automatically** (the mandate requires that no record is lost). It grows by about
+**Retention policy: records are archived, never deleted.** Once a day (after
+04:00 local, following the 03:17 backup timer) cproxy-ui moves records older
+than **180 days** (`CPROXY_UI_ARCHIVE_AFTER_DAYS`) from `ui/requests.jsonl`
+into `ui/data/archive/requests-before-<date>-<UTC>.jsonl.gz`. It does so only
+after all of the following hold:
+
+1. a fresh backup of the whole history is written and verifies;
+2. the archive is written, fsync'd and read back with exactly the expected ids;
+3. every archived id is also in that fresh backup;
+4. the replacement live content (kept + anything appended meanwhile) is
+   journaled, fsync'd and verified.
+
+The live file is then rewritten in place, under the service's write lock and an
+exclusive `data/.history.lock` (backups take it shared, so they never capture a
+half-rewrite). A journal marker makes an interrupted rewrite finish on the next
+start. If any check fails, nothing is removed, only the job's temp files are
+cleaned up, and `/api/health` → `ingest.archive.last_error` plus a dashboard
+warning report it. The service runs the job itself because it owns the file
+and the in-memory records; the timer only makes the nightly backup.
+Conservation check at any time:
+`venv/bin/python tools/datastore.py audit` (live ∪ archives == total ingested).
+
+Archived records leave the dashboard's analytics (which cover the live file)
+but stay in the archives. It grows by about
 2 KB per request on disk, and cproxy-ui keeps about 3.2 KB per request in memory
 (~0.6 GiB RAM per 200k requests). `/api/health` → `ingest.storage` reports the
 file size, free disk and newest backup, and the dashboard warns when free disk
@@ -299,6 +321,7 @@ from `ui/`):
 | backup (also daily via `cproxy-ui-backup.timer`, 03:17 ± 15 min, keeps 30) | `venv/bin/python tools/datastore.py backup` |
 | check a backup | `venv/bin/python tools/datastore.py verify data/backups/<file>.tar.gz` |
 | sizes, record count, newest backup | `venv/bin/python tools/datastore.py status` |
+| conservation audit (live ∪ archives == ingested) | `venv/bin/python tools/datastore.py audit` |
 | restore (merge) | see below |
 | archive old history | see below |
 

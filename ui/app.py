@@ -19,9 +19,11 @@ from fastapi.concurrency import iterate_in_threadpool, run_in_threadpool
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from analytics import WINDOWS, DerivedCache, aggregate, filter_window, local_iso, recent
+import archiver
+from analytics import LOCAL_TZ, WINDOWS, DerivedCache, aggregate, filter_window, local_iso, recent
 from export import csv_lines
 from ingest import DEFAULT_QUEUE_RETENTION_SECONDS, RecordStore, drain_queue, iso_utc, key_names_from_config, loss_window, mask_key, parse_ts, ratelimit_from_signals, retention_from_config, utc_now
+from tools import datastore
 from pricing import AS_OF, BASIS, PRICING, SOURCE_URL, pricing_payload, resolve_model
 from version import BUILD_DATE, SERVICE, VERSION
 
@@ -43,6 +45,11 @@ BACKUP_STALE_SECONDS = 48 * 3600
 BACKUP_PREFIX = "cproxy-ui-backup-"
 # Warn when the service uses this share of its cgroup memory limit (MemoryHigh, else MemoryMax).
 MEMORY_WARN_FRACTION = 0.7
+# Automatic archiving (archiver.py): checked hourly, runs after ARCHIVE_HOUR local time and at
+# most once per ARCHIVE_MIN_INTERVAL - after the 03:17 backup timer.
+ARCHIVE_CHECK_SECONDS = 3600
+ARCHIVE_HOUR = 4
+ARCHIVE_MIN_INTERVAL = 20 * 3600
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("cproxy-ui")
@@ -276,10 +283,17 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task = asyncio.create_task(poller(app)) if start_poller else None
+        archive_task = asyncio.create_task(archive_loop(app)) if start_poller else None
         try:
             yield
         finally:
             app.state.stopping.set()
+            if archive_task:
+                archive_task.cancel()
+                try:
+                    await archive_task
+                except asyncio.CancelledError:
+                    pass
             if task:
                 try:
                     await asyncio.wait_for(asyncio.shield(task), SHUTDOWN_GRACE_SECONDS)
@@ -299,6 +313,12 @@ def create_app(
     app.state.client = client or httpx.AsyncClient(timeout=10)
     app.state.own_client = client is None
     app.state.management = ManagementAPI(management_url, management_key or os.getenv("CPROXY_MANAGEMENT_KEY"), app.state.client)
+    try:
+        recovered = archiver.recover_interrupted_rewrite(data_dir)
+        if recovered:
+            logger.warning("archive rewrite recovery: %s", recovered)
+    except OSError:
+        logger.exception("could not recover an interrupted archive rewrite; requests.jsonl left as is")
     app.state.store = RecordStore(data_dir / "requests.jsonl", data_dir / "data" / "ingest_state.json")
     app.state.key_names = {}
     app.state.key_names_at = 0.0
@@ -374,6 +394,76 @@ def create_app(
             except TimeoutError:
                 pass
 
+    async def archive_once(app: FastAPI, now: datetime | None = None) -> dict[str, Any]:
+        """Move records older than ARCHIVE_AFTER_DAYS to a verified archive (never deletes)."""
+        store: RecordStore = app.state.store
+        now = now or utc_now()
+        cutoff = archiver.cutoff_for(now)
+        store.state["archive_last_attempt_at"] = iso_utc(now)
+        if store.pending:
+            store.state["archive_last_error"] = "skipped: records are waiting to be written (disk problem)"
+            store.save_state()
+            return {"archived": 0, "skipped": "pending writes"}
+        if not archiver.has_old_records(store.records, cutoff):
+            store.state["archive_last_error"] = None
+            store.save_state()
+            return {"archived": 0}
+        try:
+            plan = await run_in_threadpool(archiver.prepare, data_dir, cutoff)
+            if plan is None:
+                store.state["archive_last_error"] = None
+                store.save_state()
+                return {"archived": 0}
+            lock = datastore.history_lock(data_dir, exclusive=True)
+            await run_in_threadpool(lock.__enter__)  # waits for a running backup to finish
+            try:
+                async with app.state.drain_lock:
+                    await run_in_threadpool(archiver.commit, data_dir, plan)
+                    old = plan["old_ids"]
+                    store.records = [r for r in store.records if r.get("id") not in old]
+                    store.ids -= old
+                    app.state.derived = DerivedCache()
+                    app.state.analytics_cache.clear()
+            finally:
+                await run_in_threadpool(lock.__exit__, None, None, None)
+        except (archiver.ArchiveError, OSError, ValueError) as exc:
+            # Everything stays where it was; only this job's temp files were removed.
+            store.state["archive_last_error"] = f"{type(exc).__name__}: {exc}"
+            store.save_state()
+            logger.error("automatic archive failed, history left untouched: %s", exc)
+            return {"archived": 0, "error": store.state["archive_last_error"]}
+        result = archiver.summary(plan, now)
+        store.state["archived_total"] = int(store.state.get("archived_total") or 0) + result["archived"]
+        store.state["archive_last_success_at"] = iso_utc(now)
+        store.state["archive_last_error"] = None
+        store.state["archive_last_result"] = result
+        store.save_state()
+        logger.info("archived %d record(s) older than %s into %s", result["archived"], iso_utc(cutoff), result["archive"])
+        return result
+
+    app.state.archive_once = archive_once
+
+    def archive_due(now: datetime) -> bool:
+        if now.astimezone(LOCAL_TZ).hour < ARCHIVE_HOUR:
+            return False
+        last = parse_ts(app.state.store.state.get("archive_last_attempt_at"))
+        return last is None or (now - last).total_seconds() >= ARCHIVE_MIN_INTERVAL
+
+    app.state.archive_due = archive_due
+
+    async def archive_loop(app: FastAPI) -> None:
+        stopping: asyncio.Event = app.state.stopping
+        while not stopping.is_set():
+            try:
+                if archive_due(utc_now()):
+                    await archive_once(app)
+            except Exception:
+                logger.exception("archive job crashed; history left untouched")
+            try:
+                await asyncio.wait_for(stopping.wait(), ARCHIVE_CHECK_SECONDS)
+            except TimeoutError:
+                pass
+
     def management_status(now: datetime) -> dict[str, Any]:
         state = app.state.store.state
         ok_age = _age_seconds(state.get("last_ok_at"), now)
@@ -385,6 +475,18 @@ def create_app(
             "last_error": state.get("last_error"),
             "last_error_at": state.get("last_error_at"),
             "key_names_error": app.state.key_names_error,
+        }
+
+    def archive_status() -> dict[str, Any]:
+        state = app.state.store.state
+        return {
+            "after_days": archiver.ARCHIVE_AFTER_DAYS,
+            "archived_total": state.get("archived_total") or 0,
+            "archives": len(datastore.archive_files(data_dir)),
+            "last_attempt_at": state.get("archive_last_attempt_at"),
+            "last_success_at": state.get("archive_last_success_at"),
+            "last_error": state.get("archive_last_error"),
+            "last_result": state.get("archive_last_result"),
         }
 
     def ingest_status(now: datetime) -> dict[str, Any]:
@@ -402,6 +504,7 @@ def create_app(
             "last_ingest_age_s": _age_seconds(state.get("last_ingest_at"), now),
             "poll_interval_s": poll_interval,
             "storage": storage_status(data_dir, now),
+            "archive": archive_status(),
             "queue_retention_s": app.state.queue_retention_s,
             "queue_retention_source": app.state.queue_retention_source,
             "loss_windows_total": state.get("loss_windows_total") or 0,

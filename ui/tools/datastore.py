@@ -21,6 +21,8 @@ Standard library only; exit 0 on success, 1 on verification failure, 2 on usage 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import gzip
 import hashlib
 import io
@@ -143,6 +145,23 @@ def fsync_write(path: Path, data: bytes) -> None:
     os.chmod(path, 0o600)
 
 
+LOCK_NAME = ".history.lock"
+
+
+@contextlib.contextmanager
+def history_lock(ui: Path, exclusive: bool):
+    """flock on data/.history.lock: backups read under a shared lock, the service's archive
+    rewrite of requests.jsonl takes it exclusively, so a snapshot never sees a half-rewrite."""
+    path = ui / "data" / LOCK_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def service_active(unit: str = "cproxy-ui") -> bool:
     try:
         result = subprocess.run(["systemctl", "is-active", "--quiet", unit], check=False)
@@ -159,35 +178,37 @@ def _tar_add(tar: tarfile.TarFile, name: str, size: int, fileobj) -> None:
 
 def backup(ui: Path, keep: int = DEFAULT_KEEP) -> dict:
     live = ui / "requests.jsonl"
-    # Fix the snapshot length first: the file is append-only, so bytes [0, length) never change
-    # while the service keeps writing after them.
-    length = complete_length(live)
-    if length:
-        with open(live, "rb") as handle:
-            sha, ids, lines = scan(handle, length)
-    else:
-        sha, ids, lines = hashlib.sha256(b"").hexdigest(), set(), 0
     state_path = ui / "data" / "ingest_state.json"
-    state = state_path.read_bytes() if state_path.exists() else b"{}\n"
-    manifest = {
-        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "records": len(ids),
-        "lines": lines,
-        "requests_sha256": sha,
-        "requests_bytes": length,
-    }
     target = ui / "data" / "backups" / f"{BACKUP_PREFIX}{now_stamp()}.tar.gz"
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(".tmp")
-    with tarfile.open(tmp, mode="w:gz") as tar:
+    # Shared lock: never snapshot while the service is rewriting the file (archiving).
+    with history_lock(ui, exclusive=False):
+        # Fix the snapshot length first: the file is append-only, so bytes [0, length) never
+        # change while the service keeps writing after them.
+        length = complete_length(live)
         if length:
             with open(live, "rb") as handle:
-                _tar_add(tar, "requests.jsonl", length, _Limited(handle, length))
+                sha, ids, lines = scan(handle, length)
         else:
-            _tar_add(tar, "requests.jsonl", 0, io.BytesIO(b""))
-        _tar_add(tar, "ingest_state.json", len(state), io.BytesIO(state))
-        payload = json.dumps(manifest, indent=2).encode()
-        _tar_add(tar, "MANIFEST.json", len(payload), io.BytesIO(payload))
+            sha, ids, lines = hashlib.sha256(b"").hexdigest(), set(), 0
+        state = state_path.read_bytes() if state_path.exists() else b"{}\n"
+        manifest = {
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "records": len(ids),
+            "lines": lines,
+            "requests_sha256": sha,
+            "requests_bytes": length,
+        }
+        with tarfile.open(tmp, mode="w:gz") as tar:
+            if length:
+                with open(live, "rb") as handle:
+                    _tar_add(tar, "requests.jsonl", length, _Limited(handle, length))
+            else:
+                _tar_add(tar, "requests.jsonl", 0, io.BytesIO(b""))
+            _tar_add(tar, "ingest_state.json", len(state), io.BytesIO(state))
+            payload = json.dumps(manifest, indent=2).encode()
+            _tar_add(tar, "MANIFEST.json", len(payload), io.BytesIO(payload))
     _fsync(tmp)
     os.replace(tmp, target)
     verified = verify(target)
@@ -342,6 +363,39 @@ def archive(ui: Path, before: str, check_service: bool = True) -> dict:
     return {"archived": len(old_ids), "remaining": len(keep_ids), "archive": str(target), "previous_file": str(kept)}
 
 
+def archive_files(ui: Path) -> list[Path]:
+    return sorted((ui / "data" / "archive").glob("requests-*.jsonl.gz"))
+
+
+def audit(ui: Path) -> dict:
+    """Conservation check: every record ever ingested is in the live file or an archive."""
+    live_ids = _ids_of(ui / "requests.jsonl")
+    archived: set = set()
+    duplicates = 0
+    for path in archive_files(ui):
+        with gzip.open(path, "rb") as handle:
+            ids = scan(handle)[1]
+        duplicates += len(ids & archived)
+        archived |= ids
+    state_path = ui / "data" / "ingest_state.json"
+    try:
+        ingested = json.loads(state_path.read_text()).get("total_ingested")
+    except (OSError, json.JSONDecodeError):
+        ingested = None
+    in_both = len(live_ids & archived)
+    union = len(live_ids | archived)
+    return {
+        "ok": ingested is None or union == ingested,
+        "live_records": len(live_ids),
+        "archived_records": len(archived),
+        "in_live_and_archive": in_both,
+        "duplicates_across_archives": duplicates,
+        "unique_records": union,
+        "total_ingested": ingested,
+        "archives": len(archive_files(ui)),
+    }
+
+
 def status(ui: Path) -> dict:
     live = ui / "requests.jsonl"
     backups = sorted((ui / "data" / "backups").glob(f"{BACKUP_PREFIX}*.tar.gz"))
@@ -367,6 +421,7 @@ def main(argv=None) -> int:
     a = sub.add_parser("archive")
     a.add_argument("--before", required=True, help="UTC date or ISO timestamp; older records are archived")
     sub.add_parser("status")
+    sub.add_parser("audit", help="live + archived unique records == total ingested")
     args = parser.parse_args(argv)
     ui = Path(args.ui)
     if args.command == "backup":
@@ -377,6 +432,8 @@ def main(argv=None) -> int:
         result = restore(ui, Path(args.backup))
     elif args.command == "archive":
         result = archive(ui, args.before)
+    elif args.command == "audit":
+        result = audit(ui)
     else:
         result = status(ui)
     print(json.dumps(result, indent=2))

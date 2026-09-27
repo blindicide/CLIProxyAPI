@@ -18,6 +18,7 @@ server-side and returned by `/api/health` and `/api/analytics`.
 | `pricing.py` | Anthropic list-price table, model id resolution, per-record cost |
 | `analytics.py` | window filtering and aggregation (`aggregate`, `recent`), `DerivedCache` |
 | `export.py` | CSV export rows (`/api/export.csv`) with formula-injection guard |
+| `archiver.py` | daily verified archiving of records older than 180 days (never deletes; journaled rewrite) |
 | `tools/datastore.py` | backup / verify / merge-restore / archive / status for `requests.jsonl` |
 | `tools/scale_test.py` | scale test on a throwaway instance with a mock management API; memory-guarded (default 2k, max 20k records on this host, `--off-host` for larger runs on a dedicated machine) |
 | `tools/verify_totals.py` | independent recomputation of totals from `requests.jsonl` vs `/api/analytics` |
