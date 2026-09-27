@@ -60,3 +60,34 @@ Long-lived alternative (`claude setup-token`), inference-only:
 sudo systemctl status|restart|stop cproxy
 journalctl -u cproxy -f
 ```
+
+## Credential in use (2026-09-27, verified)
+
+Dedicated `claude setup-token` value registered as
+`auths/claude-<sha256(org_uuid)[:8]>-<email>.json` with
+`"is_setup_token": true` + `"skip_account_profile": true` (the token has no
+`user:profile` scope, so an `/api/oauth/profile` lookup returns 403 — that 403 is
+the cheap way to *identify* a setup token vs. a CLI access token). No
+`refresh_token` is stored, so this credential can never rotate the Claude Code
+CLI's own refresh chain.
+
+The bootstrap credential used for the first smoke test (a copy of
+`~/.claude/.credentials.json`'s access token, no refresh token, guaranteed to
+die within the hour) is kept out of the auth dir under `retired/`.
+
+## Live quota signals (no extra calls needed)
+
+`GET /v0/management/auth-files` (management key, localhost) surfaces the
+Anthropic rate-limit headers observed on the last real request:
+
+```
+5h  util=0.62  status=allowed  reset=<epoch>
+7d  util=0.72  status=allowed  reset=<epoch>
+overage=org_level_disabled  fallback=available
+```
+
+Use this instead of probing upstream to answer "am I near the limit".
+A transient `429 rate_limit_error` passes through to the client
+(`{"type":"error",...}`) while the credential stays `failed: 0, cooldowns: []`.
+Note `401 "OAuth access token has been revoked"` vs `429 rate_limit_error`:
+401 means a dead credential, 429 means an authenticated but throttled request.
