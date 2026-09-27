@@ -96,6 +96,15 @@ test("a quota window that reset since observation is shown as unknown", () => {
   assert.ok(live.includes("74% used") && live.includes('aria-valuenow="74"') && live.includes("qfill warn"));
 });
 
+test("lifetime card appears only when records were archived", () => {
+  const base = `{window:"all",summary:{requests:2,success:2,failed:0,success_pct:100,failed_pct:0,input_tokens:1,output_tokens:1,cache_read_tokens:0,cache_write_tokens:0,reasoning_tokens:0,estimated_cost_usd:0.5,unpriced_requests:0,unpriced_models:{},avg_latency_ms:1,p50_latency_ms:1,p95_latency_ms:1,avg_ttft_ms:1,ttft_samples:1,stream_requests:1,non_stream_requests:1,requests_per_min:0.1}`;
+  run(`renderCards(${base}})`);
+  assert.ok(!element("cards").innerHTML.includes("Lifetime"));
+  run(`renderCards(${base},lifetime:{requests:5,estimated_cost_usd:1.25,archived_requests:3}})`);
+  const html = element("cards").innerHTML;
+  assert.ok(html.includes("Lifetime") && html.includes("5 · $1.25") && html.includes("incl. 3 archived"), html);
+});
+
 test("charts announce a data summary", () => {
   run(`bars("ch-req",[{bucket:"2026-09-27",requests:5,failed:1},{bucket:"2026-09-28",requests:2,failed:0}],[{name:"ok",c:"x",v:d=>d.requests-d.failed},{name:"failed",c:"y",v:d=>d.failed}],v=>String(Math.round(v)),b=>b,"Requests")`);
   assert.equal(element("ch-req").attributes["aria-label"], "Requests: ok 6, failed 1 over 2 buckets; peak 5 at 2026-09-27");

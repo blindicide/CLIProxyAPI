@@ -14,6 +14,7 @@ Exit status 0 when every compared figure matches, 1 on any mismatch, 2 on usage/
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import re
 import sys
@@ -87,10 +88,11 @@ def parse_time(value):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def load(path):
-    """Stream the file, keeping only what the recomputation needs (low memory at any size)."""
-    seen, records = set(), []
-    with open(path, encoding="utf-8", errors="replace") as handle:
+def load(path, seen=None):
+    """Stream the file (.jsonl or .jsonl.gz), keeping only what the recomputation needs."""
+    seen, records = (set() if seen is None else seen), []
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             try:
                 record = json.loads(line)
@@ -176,6 +178,31 @@ def compare(analytics, records):
     return mine, problems
 
 
+def load_lifetime(live_path):
+    """Live records first, then every archive, each id counted once."""
+    seen = set()
+    records = load(live_path, seen)
+    for archive in sorted((Path(live_path).parent / "data" / "archive").glob("requests-*.jsonl.gz")):
+        records += load(archive, seen)
+    return records
+
+
+def compare_lifetime(analytics, records):
+    """Mismatches between the API's lifetime block and a recomputation over live + archives."""
+    life = analytics.get("lifetime")
+    if life is None:
+        return None, [("lifetime", "block expected for window=all", None)]
+    now = parse_time(analytics["generated_at"])
+    visible = [r for r in records if (parse_time(r.get("ingested_at")) or now) <= now]
+    mine, _ = recompute(visible, "all", now)
+    problems = [(f"lifetime.{f}", mine[f], life[f]) for f in ("requests", "success", "failed", "input_tokens", "output_tokens",
+                "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "priced_requests", "unpriced_requests") if mine[f] != life[f]]
+    reported = life["estimated_cost_usd"]
+    if mine["priced_requests"] and (reported is None or abs(mine["cost"] - reported) > COST_TOLERANCE):
+        problems.append(("lifetime.estimated_cost_usd", round(mine["cost"], 8), reported))
+    return mine, problems
+
+
 def fetch(url):
     with urllib.request.urlopen(url, timeout=30) as response:  # local tool, not a relay path
         return json.loads(response.read().decode("utf-8"))
@@ -188,6 +215,7 @@ def main(argv=None):
     parser.add_argument("--file", default=str(here / "requests.jsonl"), help="path to requests.jsonl")
     parser.add_argument("--window", choices=[*WINDOWS, "every"], default="every")
     parser.add_argument("--json", action="store_true", help="print a JSON report")
+    parser.add_argument("--lifetime", action="store_true", help="also check the all-time totals (live + data/archive)")
     args = parser.parse_args(argv)
     windows = list(WINDOWS) if args.window == "every" else [args.window]
     report, failed = [], False
@@ -203,12 +231,26 @@ def main(argv=None):
         report.append({"window": window, "generated_at": analytics["generated_at"], "requests": mine["requests"],
                        "cost_usd": round(mine["cost"], 8), "match": not problems,
                        "mismatches": [{"field": f, "recomputed": a, "api": b} for f, a, b in problems]})
+    if args.lifetime:
+        try:
+            analytics = fetch(f"{args.url.rstrip('/')}/api/analytics?window=all")
+            records = load_lifetime(args.file)
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        mine, problems = compare_lifetime(analytics, records)
+        failed |= bool(problems)
+        report.append({"window": "lifetime", "generated_at": analytics["generated_at"], "requests": mine["requests"] if mine else None,
+                       "cost_usd": round(mine["cost"], 8) if mine else None, "match": not problems,
+                       "mismatches": [{"field": f, "recomputed": a, "api": b} for f, a, b in problems]})
     if args.json:
         print(json.dumps({"ok": not failed, "windows": report}, indent=2))
     else:
         for item in report:
             status = "MATCH" if item["match"] else "MISMATCH"
-            print(f"{item['window']:>4}  {status:8}  requests={item['requests']:<6} cost_usd={item['cost_usd']:.8f}  (api generated_at {item['generated_at']})")
+            requests = "—" if item["requests"] is None else item["requests"]
+            cost = "—" if item["cost_usd"] is None else f"{item['cost_usd']:.8f}"
+            print(f"{item['window']:>8}  {status:8}  requests={requests:<6} cost_usd={cost}  (api generated_at {item['generated_at']})")
             for m in item["mismatches"]:
                 print(f"        {m['field']}: recomputed={m['recomputed']} api={m['api']}")
     return 1 if failed else 0

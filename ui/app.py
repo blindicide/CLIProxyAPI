@@ -20,6 +20,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 import archiver
+import lifetime
 from analytics import LOCAL_TZ, WINDOWS, DerivedCache, aggregate, filter_window, local_iso, recent
 from export import csv_lines
 from ingest import DEFAULT_QUEUE_RETENTION_SECONDS, RecordStore, drain_queue, iso_utc, key_names_from_config, loss_window, mask_key, parse_ts, ratelimit_from_signals, retention_from_config, utc_now
@@ -331,6 +332,7 @@ def create_app(
     app.state.stopping = asyncio.Event()
     app.state.derived = DerivedCache()
     app.state.analytics_cache = {}
+    app.state.lifetime = lifetime.LifetimeCache(data_dir)
 
     async def refresh_key_names(app: FastAPI, force: bool = False) -> None:
         if force or time.monotonic() - app.state.key_names_at > KEY_NAMES_TTL_SECONDS:
@@ -558,6 +560,9 @@ def create_app(
         else:
             # CPU-bound: run off the event loop so the usage poller keeps draining meanwhile.
             computed = await run_in_threadpool(aggregate, list(records), window, now, app.state.derived)
+            if window == "all":
+                archived = await run_in_threadpool(app.state.lifetime.archived, set(app.state.store.ids))
+                computed["lifetime"] = lifetime.combine(computed["summary"], archived)
             app.state.analytics_cache[window] = (clock(), len(records), computed)
             result = dict(computed)
         result["version"] = VERSION

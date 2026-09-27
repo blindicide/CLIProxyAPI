@@ -190,6 +190,7 @@ function renderCards(a){
     card("Reasoning",k(s.reasoning_tokens),"billed as output"),
     card("Latency avg",ms(s.avg_latency_ms),`p50 ${ms(s.p50_latency_ms)} · p95 ${ms(s.p95_latency_ms)}`),
     card("TTFT avg",ms(s.avg_ttft_ms),`${n(s.ttft_samples)} samples with TTFT`),
+    ...(a.lifetime&&a.lifetime.archived_requests?[card("Lifetime",`${n(a.lifetime.requests)} · ${usd(a.lifetime.estimated_cost_usd)}`,`incl. ${n(a.lifetime.archived_requests)} archived (older than 180 d, not in charts)`)]:[]),
     card("Stream / non",`${n(s.stream_requests)} / ${n(s.non_stream_requests)}`,s.requests?pct(100*s.stream_requests/s.requests)+" streamed":""),
   ].join("");
   const um = Object.entries(s.unpriced_models||{});

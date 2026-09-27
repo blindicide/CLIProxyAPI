@@ -24,6 +24,10 @@ Versions are shown in the dashboard header/footer, `/api/health` and
   read-back-verified archive exist; journaled in-place rewrite with crash
   recovery; any failed check keeps everything and warns. `datastore.py audit`
   proves live ∪ archives == total ingested.
+- All-time totals: `/api/analytics?window=all` carries `lifetime` (live +
+  archived, each record once, costs at current prices), a dashboard card once
+  anything is archived, and `verify_totals.py --lifetime` checks it
+  independently.
 
 ## 0.2.0 — 2026-09-27 (tag `cproxy-ui-v0.2`)
 
