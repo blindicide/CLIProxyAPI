@@ -304,32 +304,37 @@ class RecordStore:
                 self.state.update({k: v for k, v in saved.items() if k in self.state})
         except (FileNotFoundError, json.JSONDecodeError):
             pass
+        # Stream line by line: reading the whole file first tripled the load-time peak.
+        torn_tail = False
         try:
-            data = self.requests_path.read_bytes()
+            handle = self.requests_path.open("rb")
         except FileNotFoundError:
             return
-        for line in data.decode("utf-8", errors="replace").splitlines():
-            if not line.strip():
-                continue
-            try:
-                record = load_compact(line)
-            except json.JSONDecodeError:
-                record = None
-            if not isinstance(record, dict) or not record.get("id"):
-                self.corrupt_lines += 1
-                continue
-            if record["id"] not in self.ids:
-                self.ids.add(record["id"])
-                self.records.append(record)
+        with handle:
+            for raw in handle:
+                torn_tail = not raw.endswith(b"\n")
+                line = raw.decode("utf-8", errors="replace")
+                if not line.strip():
+                    continue
+                try:
+                    record = load_compact(line)
+                except json.JSONDecodeError:
+                    record = None
+                if not isinstance(record, dict) or not record.get("id"):
+                    self.corrupt_lines += 1
+                    continue
+                if record["id"] not in self.ids:
+                    self.ids.add(record["id"])
+                    self.records.append(record)
         if self.corrupt_lines:
             logger.warning("%s has %d corrupt line(s); they are kept on disk and ignored", self.requests_path.name, self.corrupt_lines)
-        if data and not data.endswith(b"\n"):
+        if torn_tail:
             # A crash mid-write left a torn last line. Terminate it so the next append starts on
             # a fresh line instead of being glued onto (and lost with) the fragment.
-            with self.requests_path.open("ab") as handle:
-                handle.write(b"\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            with self.requests_path.open("ab") as out:
+                out.write(b"\n")
+                out.flush()
+                os.fsync(out.fileno())
             logger.warning("terminated torn last line in %s", self.requests_path.name)
 
     def append(self, records: list[dict[str, Any]]) -> int:

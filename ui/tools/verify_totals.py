@@ -66,6 +66,8 @@ def num(value):
 
 def buckets(record):
     """(uncached, cache_read, cache_write, output, reasoning, unclassified) per the spec."""
+    if "_buckets" in record:
+        return record["_buckets"]
     tb = record.get("token_breakdown") or {}
     if tb.get("quality") == "complete" and isinstance(tb.get("input"), dict) and isinstance(tb.get("output"), dict):
         i, o = tb["input"], tb["output"]
@@ -86,15 +88,21 @@ def parse_time(value):
 
 
 def load(path):
+    """Stream the file, keeping only what the recomputation needs (low memory at any size)."""
     seen, records = set(), []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict) and record.get("id") and record["id"] not in seen:
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict) or not record.get("id") or record["id"] in seen:
+                continue
             seen.add(record["id"])
-            records.append(record)
+            records.append({
+                "id": record["id"], "timestamp": record.get("timestamp"), "ingested_at": record.get("ingested_at"),
+                "model": record.get("model"), "failed": bool(record.get("failed")), "_buckets": buckets(record),
+            })
     return records
 
 

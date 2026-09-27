@@ -11,6 +11,9 @@ Versions are shown in the dashboard header/footer, `/api/health` and
   sandboxed daily backup timer (keeps 30), and storage + backup freshness in
   `/api/health` with dashboard warnings. History is still never truncated
   automatically.
+- The store and the oracle stream `requests.jsonl` instead of reading it
+  whole: load-time peak 9.9 → 3.3 KB/record (store), 13.8 → 1.3 KB/record
+  (oracle). Memory-guarded `tools/scale_test.py` (20k records max on this host).
 
 ## 0.2.0 — 2026-09-27 (tag `cproxy-ui-v0.2`)
 

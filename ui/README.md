@@ -166,6 +166,31 @@ venv/bin/python tools/verify_totals.py          # add --json for a machine-reada
 in every window, proves a tampered file is caught, and asserts the two price
 tables agree.
 
+### Scale (measured 2026-09-27 on the shared 7.8 GB host)
+
+`tools/scale_test.py --records 20000` (the on-host maximum; 90-day synthetic
+history, 10 viewers polling back to back for 15 s, 5 new records/s ingested
+meanwhile, mock management API):
+
+| metric | value |
+|---|---|
+| startup with 20k records (36.6 MiB file) | 1.6 s |
+| peak RSS: service / oracle / harness | 140 / 48 / 73 MiB |
+| `/api/analytics` cold (24h / 7d / 30d / all) | 487 / 49 / 245 / 175 ms |
+| `/api/analytics` warm (5 s result cache) | 3–7 ms |
+| `/api/requests?limit=100` | 33 ms |
+| CSV export, all 20k rows (6.4 MiB) | 0.86 s |
+| concurrent polling p50 / p95 / max | 144 / 626 / 1203 ms (768 requests) |
+| ingest under load | 89 of 89 records stored, queue empty |
+| independent recomputation (`verify_totals`) | MATCH in all four windows |
+
+Load-time memory was the scaling limit: reading `requests.jsonl` whole peaked at
+~10 KB per record in the store (and ~14 KB in the oracle), and a 200k run
+OOM-killed other processes on this host. Both now stream the file (peak
+~3.3 KB and ~1.3 KB per record at 20k). Runs above 20k records are only for a
+dedicated machine (`--off-host`); none has been done yet, so there are no
+measured numbers above 20k.
+
 ### Fixture and secret policy
 
 - `tests/fixtures/usage_queue_sample.json` is the raw capture and contains the

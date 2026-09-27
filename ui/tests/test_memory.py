@@ -52,3 +52,47 @@ def test_analytics_unchanged_by_compaction(tmp_path, sample):
     for window in ("24h", "7d", "30d", "all"):
         assert aggregate(store.records, window, NOW) == aggregate(normalised, window, NOW)
     assert recent(store.records, 5) == recent(normalised, 5)
+
+
+def _history(tmp_path, sample, n):
+    path = tmp_path / "big.jsonl"
+    with path.open("w") as handle:
+        for i in range(n):
+            raw = copy.deepcopy(sample[i % 2])
+            raw["execution_id"] = f"load-{i}"
+            handle.write(json.dumps(normalize_record(raw, {})) + "\n")
+    return path
+
+
+def _peak_bytes(fn):
+    import gc
+    import tracemalloc
+
+    gc.collect()
+    tracemalloc.start()
+    try:
+        result = fn()
+        return tracemalloc.get_traced_memory()[1], result
+    finally:
+        tracemalloc.stop()
+
+
+def test_store_load_peak_stays_near_steady_state(tmp_path, sample):
+    """Loading streams the file; reading it whole first peaked at ~10 KB/record (2026-09-27 OOM)."""
+    path = _history(tmp_path, sample, 3000)
+    peak, store = _peak_bytes(lambda: RecordStore(path, tmp_path / "state.json"))
+    assert len(store.records) == 3000
+    assert peak / 3000 < 5000, f"{peak / 3000:.0f} B/record peak while loading"
+
+
+def test_oracle_load_is_slim(tmp_path, sample):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("verify_totals", Path(__file__).resolve().parents[1] / "tools" / "verify_totals.py")
+    verify = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verify)
+    path = _history(tmp_path, sample, 3000)
+    peak, rows = _peak_bytes(lambda: verify.load(path))
+    assert len(rows) == 3000 and set(rows[0]) == {"id", "timestamp", "ingested_at", "model", "failed", "_buckets"}
+    assert peak / 3000 < 2500, f"{peak / 3000:.0f} B/record peak while loading"
