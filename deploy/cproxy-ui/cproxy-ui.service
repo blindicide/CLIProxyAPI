@@ -6,13 +6,54 @@ Wants=cproxy.service
 [Service]
 Type=simple
 User=clawuser
+Group=clawuser
 WorkingDirectory=/home/clawuser/projects/cproxy/ui
+# Read by systemd itself before the sandbox is set up; invisible to the process tree afterwards.
 EnvironmentFile=/home/clawuser/projects/cproxy/deploy/cproxy-ui.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+# The write targets must exist before they can be bind-mounted (first start on a fresh checkout).
+ExecStartPre=+/usr/sbin/runuser -u clawuser -- /bin/sh -c 'umask 077; mkdir -p /home/clawuser/projects/cproxy/ui/data && { [ -e /home/clawuser/projects/cproxy/ui/requests.jsonl ] || : > /home/clawuser/projects/cproxy/ui/requests.jsonl; }'
 ExecStart=/home/clawuser/projects/cproxy/ui/venv/bin/uvicorn app:app --host 127.0.0.1 --port 24688 --no-access-log
 Restart=always
 RestartSec=3
 StandardOutput=journal
 StandardError=journal
+
+# --- sandbox -------------------------------------------------------------------------------
+# /home is an empty tmpfs: auths/, config.yaml, deploy/*.env, ~/.claude and every other
+# project are invisible. Only ui/ comes back, read-only, plus the two paths it writes.
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/clawuser/projects/cproxy/ui
+BindPaths=/home/clawuser/projects/cproxy/ui/requests.jsonl /home/clawuser/projects/cproxy/ui/data
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Talks only to cproxy on 127.0.0.1:31524 and serves nginx on 127.0.0.1:24688.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

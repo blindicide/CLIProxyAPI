@@ -111,6 +111,27 @@ and secret policy): [`ui/README.md`](../../ui/README.md).
   `cproxy.net.a.blindicide.ru.conf` got `location /` → 24688 and its API block
   narrowed to `^/(v1|v0|health)` (backup `*.bak-20260927-150346` alongside it).
 
+### Sandbox (cproxy-ui.service)
+
+The unit is sandboxed (`systemd-analyze security cproxy-ui`: 1.1 "OK", was 9.2):
+`/home` is an empty tmpfs inside the service, `ui/` is bind-mounted back
+read-only, and only `ui/requests.jsonl` and `ui/data/` are writable. `auths/`,
+`config.yaml`, `deploy/*.env`, `~/.claude` and other projects are invisible to
+the process (the EnvironmentFile is read by systemd before the sandbox applies).
+No capabilities, seccomp `@system-service`, IP traffic limited to localhost,
+`UMask=0077`.
+
+Consequences for operators:
+- after editing the template, reinstall it:
+  `sudo install -m 644 deploy/cproxy-ui/cproxy-ui.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart cproxy-ui`;
+- `requests.jsonl` is a bind-mounted file: the app only appends to it; never
+  replace it with a rename (`mv`/`os.replace`) while the service is running;
+- code changes in `ui/` need a restart (the service cannot write
+  `__pycache__`; `PYTHONDONTWRITEBYTECODE=1` is set).
+
+Rollback: the pre-sandbox unit is the same file minus the `# --- sandbox`
+section, `ExecStartPre` and `UMask`.
+
 ### Endpoints
 
 `GET /` dashboard · `/api/health` · `/api/analytics?window=24h|7d|30d|all` ·
